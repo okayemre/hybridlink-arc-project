@@ -22,6 +22,8 @@ Hands-on Hybrid-Cloud-Projekt: Eine on-premises Windows-Server-2025-VM wird vorb
 
 Dieses Projekt basiert auf einer offiziellen Lab-Setup-Anleitung (Basis-Server-Vorbereitung) und erweitert diese um eine vollständige Hybrid-Cloud-Integration mit Azure.
 
+> 📄 **Original-Dokument:** [Lab-Setup_Hybrid-Cloud-Basis.pdf](docs/Lab-Setup_Hybrid-Cloud-Basis.pdf)
+
 ---
 
 ## 📋 Inhaltsverzeichnis
@@ -313,6 +315,8 @@ In einer produktiven Umgebung mit stärkerer Host-Hardware oder einer bereits vo
 hybridlink-arc-project/
 ├── 📄 README.md
 ├── 📁 arm-templates/
+├── 📁 docs/
+│   └── Lab-Setup_Hybrid-Cloud-Basis.pdf
 └── 📁 screenshots/
     ├── T1-01-network-verification.png
     ├── T1-02-snapshot-manager.png
@@ -348,6 +352,8 @@ hybridlink-arc-project/
 Hands-on hybrid cloud project: An on-premises Windows Server 2025 VM is prepared and then connected to Microsoft Azure — via **Azure Arc**, **Azure Backup**, and **Azure Migrate** — for the fictional company **HybridLink GmbH**.
 
 This project is based on an official lab setup guide (basis server preparation) and extends it with a full hybrid cloud integration into Azure.
+
+> 📄 **Original document:** [Lab-Setup_Hybrid-Cloud-Basis.pdf](docs/Lab-Setup_Hybrid-Cloud-Basis.pdf)
 
 ---
 
@@ -640,6 +646,8 @@ In a production environment with stronger host hardware or an existing VMware vC
 hybridlink-arc-project/
 ├── 📄 README.md
 ├── 📁 arm-templates/
+├── 📁 docs/
+│   └── Lab-Setup_Hybrid-Cloud-Basis.pdf
 └── 📁 screenshots/
     ├── T1-01-network-verification.png
     ├── T1-02-snapshot-manager.png
