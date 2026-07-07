@@ -1,0 +1,13 @@
+# Secrets & credentials
+*.pfx
+*.key
+secrets.json
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
