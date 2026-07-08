@@ -228,6 +228,21 @@ az backup vault create \
 | ![B2.4 – MARS Agent Backup Schedule konfiguriert, Next Backup Zeit sichtbar](screenshots/B2-07-backup-schedule-configured.png) | ![B2.4 – MARS Agent Status: Last Backup Completed, Total backups 1](screenshots/B2-08-first-backup-completed.png) |
 | *Backup-Zeitplan konfiguriert* | *Erster Backup-Job erfolgreich abgeschlossen* |
 
+### 🔄 Recovery-Verifizierung (Restore-Test)
+
+Ein Backup ist nur so gut wie seine nachgewiesene Wiederherstellbarkeit. Daher wurde zusätzlich ein vollständiger Restore-Test durchgeführt:
+
+- Recovery Point vom 8.7.2026 als Laufwerk (`E:\`) gemountet
+- `BackupTest`-Ordner an einen neuen Ort (`Desktop\Restore-Test`) kopiert
+- Dateiinhalt mit dem Original verglichen — **identisch**
+- Recovery-Volume sauber ausgehängt (Unmount)
+
+> 🔑 **Erkenntnis 9b — Doppelte VM-Kopien können zu Identitätskonflikten beim Backup-Dienst führen:** Nach dem Verschieben der VM auf den Mini-PC (per "I Copied It") teilen beide VM-Kopien (Windows-Host und Mini-PC) dieselbe MARS-Agent-Registrierungsidentität. Bei einem späteren Restore-Versuch auf der ursprünglichen Windows-Kopie trat der Fehler **"Resource not provisioned in service stamp" (ID: 230006)** auf — ein von Microsoft dokumentierter Fehlercode, der typischerweise mit Identitäts-/Namensinkonsistenzen des registrierten Servers zusammenhängt. Ein Neustart der VM löste das Problem in diesem Fall. Für produktive Umgebungen empfiehlt sich, bei VM-Duplikaten mit aktivem Backup jeweils eine frische MARS-Registrierung vorzunehmen, um Identitätskonflikte von vornherein zu vermeiden.
+
+![B2.4 – PowerShell-Ausgabe: wiederhergestellte Datei mit identischem Inhalt zum Original](screenshots/B2-11-restore-test-completed.png)
+
+*Restore-Test erfolgreich — Dateiinhalt nach Wiederherstellung identisch mit dem Original*
+
 ---
 
 ## Bonus 2.5 — Azure Migrate
@@ -372,7 +387,8 @@ hybridlink-arc-project/
     ├── B2-07-backup-schedule-configured.png
     ├── B2-08-first-backup-completed.png
     ├── B2-09-migrate-project-created.png
-    └── B2-10-mastersite-created.png
+    ├── B2-10-mastersite-created.png
+    └── B2-11-restore-test-completed.png
 ```
 
 ---
@@ -598,6 +614,21 @@ az backup vault create \
 | ![B2.4 – MARS Agent backup schedule configured, Next Backup time visible](screenshots/B2-07-backup-schedule-configured.png) | ![B2.4 – MARS Agent status: Last Backup Completed, Total backups 1](screenshots/B2-08-first-backup-completed.png) |
 | *Backup schedule configured* | *First backup job completed successfully* |
 
+### 🔄 Recovery verification (restore test)
+
+A backup is only as good as its proven recoverability. A full restore test was therefore carried out as well:
+
+- Mounted the July 8, 2026 recovery point as a drive (`E:\`)
+- Copied the `BackupTest` folder to a new location (`Desktop\Restore-Test`)
+- Compared the file content against the original — **identical**
+- Cleanly unmounted the recovery volume
+
+> 🔑 **Key insight 9b — Duplicate VM copies can cause backup-service identity conflicts:** After moving the VM to the mini PC (via "I Copied It"), both VM copies (Windows host and mini PC) shared the same MARS agent registration identity. A later restore attempt on the original Windows copy triggered the error **"Resource not provisioned in service stamp" (ID: 230006)** — a documented Microsoft error code typically tied to identity/naming inconsistencies of the registered server. Restarting the VM resolved it in this case. In production environments, it's advisable to perform a fresh MARS registration for each VM duplicate with active backup, to avoid identity conflicts from the outset.
+
+![B2.4 – PowerShell output: restored file content identical to the original](screenshots/B2-11-restore-test-completed.png)
+
+*Restore test successful — file content after recovery matches the original exactly*
+
 ---
 
 ## Bonus 2.5 — Azure Migrate
@@ -742,7 +773,8 @@ hybridlink-arc-project/
     ├── B2-07-backup-schedule-configured.png
     ├── B2-08-first-backup-completed.png
     ├── B2-09-migrate-project-created.png
-    └── B2-10-mastersite-created.png
+    ├── B2-10-mastersite-created.png
+    └── B2-11-restore-test-completed.png
 ```
 
 ---
