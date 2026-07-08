@@ -237,7 +237,9 @@ az backup vault create \
 ### Durchgeführte Schritte
 
 - Migrate-Projekt `hybridlink-migrate` via Azure CLI erstellt (Geography: Sweden)
-- Appliance-Bereitstellung ("Using appliance" → "For Azure" → "Physical or other") bis zum Download-Schritt vorbereitet
+- On-Prem-VM per USB-Transfer auf einen zweiten Host (Mini-PC, Linux, VMware Workstation Pro, 32 GB RAM) verschoben, um die Ressourcenanforderungen der Appliance (16 GB RAM, 8 vCPU) erfüllen zu können
+- `Microsoft.OffAzure/masterSites`-Ressource (`hlk-appliance`) via Azure CLI erfolgreich erstellt
+- Appliance-Key-Generierung im Azure Portal **dauerhaft blockiert** (siehe unten) — Discovery-Phase konnte nicht durchgeführt werden
 
 ```bash
 # Direct ARM resource creation was required due to CLI extension
@@ -257,24 +259,58 @@ az resource create \
     },
     "properties": {}
   }'
+
+# The masterSites resource (backing the appliance key generation)
+# also required a stable, non-preview API version to succeed
+az resource create \
+  --resource-group "rg-hybridlink-arc" \
+  --name "hlk-appliance" \
+  --resource-type "Microsoft.OffAzure/masterSites" \
+  --api-version "2023-06-06" \
+  --is-full-object \
+  --properties '{
+    "location": "swedencentral",
+    "tags": {
+      "Environment": "Lab",
+      "Project": "hybridlink-arc",
+      "Owner": "Emre"
+    },
+    "properties": {
+      "allowMultipleSites": false,
+      "publicNetworkAccess": "Enabled"
+    }
+  }'
 ```
 
-### ⚠️ Hinweis — Ressourcenbeschränkung des Host-PCs
+### ⚠️ Root-Cause-Analyse — Appliance-Key-Generierung dauerhaft blockiert
 
-Die Azure-Migrate-Appliance benötigt eine dedizierte VM mit **16 GB RAM, 8 vCPUs und ~80 GB Speicher** (Windows Server 2022). Der verwendete Host-PC (13th Gen Intel Core i7-1355U, ~15,7 GB RAM gesamt, davon zum Testzeitpunkt nur ~1,4 GB frei) konnte diese Anforderung parallel zu `SRV-HYBRID01` nicht erfüllen. Die eigentliche Discovery/Assessment-Phase wurde daher **nicht** durchgeführt; stattdessen erfolgte eine manuelle Sizing-Einschätzung:
+Trotz erfolgreicher Erstellung aller identifizierbaren Voraussetzungen blieb der Portal-Button **"Generate key"** in einer Endlosschleife hängen, ohne einen sichtbaren Fehler auszugeben. Es wurde eine systematische Ausschlussdiagnose durchgeführt, bei der drei plausible Hypothesen einzeln getestet und **alle widerlegt** wurden:
+
+| # | Hypothese | Test | Ergebnis |
+|---|---|---|---|
+| 1 | Tag-Policy blockiert eine verdeckte Sub-Ressource | Policy temporär auf `DoNotEnforce` gesetzt | ❌ Fehler bestand weiterhin — Policy nicht die Ursache |
+| 2 | Fehlende Berechtigung zur Erstellung einer Microsoft Entra ID App Registration | Test-App via `az ad app create` erstellt | ✅ Erfolgreich — keine Einschränkung |
+| 3 | Fehlende RBAC-Rollenzuweisungsberechtigung | Service Principal erstellt, Contributor-Rolle zugewiesen (`az role assignment create`) | ✅ Erfolgreich — keine Einschränkung |
+
+Alle Testressourcen wurden anschließend bereinigt, die Policy wieder auf `Default` zurückgesetzt.
+
+**Ergebnis:** Die zugrunde liegende Ursache konnte trotz systematischer Eliminierung aller naheliegenden Hypothesen (Governance-Policy, Identitätsberechtigung, RBAC-Berechtigung) **nicht abschließend identifiziert werden**. Es handelt sich vermutlich um eine nicht dokumentierte Einschränkung des `Microsoft.OffAzure`-Preview-Providers in Kombination mit einer Azure for Students Subscription. Die Discovery/Assessment-Phase der Appliance konnte daher nicht durchgeführt werden; stattdessen erfolgte eine manuelle Sizing-Einschätzung:
 
 | On-Prem-Ressource | Empfohlene Azure-VM-SKU | Begründung |
 |---|---|---|
 | 2 vCPU, 4 GB RAM | `Standard_B2s` / `Standard_B2ats_v2` | Burstable, kosteneffizient für Lab-/Testlasten |
 | 60 GB Disk | Standard SSD (E15, 64 GB) | Ausreichende Performance für Test-Workloads |
 
-In einer produktiven Umgebung mit stärkerer Host-Hardware oder einer bereits vorhandenen VMware-vCenter-Infrastruktur würde dieser Schritt mit der Appliance vollständig automatisiert ablaufen.
+In einer produktiven Umgebung mit einer regulären (Nicht-Studenten-)Subscription oder einer bereits vorhandenen VMware-vCenter-Infrastruktur würde dieser Schritt voraussichtlich vollständig automatisiert ablaufen.
 
-> 🔑 **Erkenntnis 10 — CLI-Extension-Preview-Status erfordert Fallback auf ARM:** Der `az migrate`-Befehl war in der genutzten Cloud-Shell-Umgebung nicht zuverlässig verfügbar (Preview-Extension, kein `project create`-Befehl dokumentiert). Direkter Zugriff über `az resource create` mit dem ARM-Ressourcentyp `Microsoft.Migrate/migrateProjects` und `--is-full-object` erwies sich als robuster Workaround — inklusive Korrektur der API-Version anhand der Azure-Fehlermeldung selbst.
+> 🔑 **Erkenntnis 10 — CLI-Extension-Preview-Status erfordert Fallback auf ARM:** Der `az migrate`-Befehl war in der genutzten Cloud-Shell-Umgebung nicht zuverlässig verfügbar. Direkter Zugriff über `az resource create` mit `--is-full-object` erwies sich als robuster Workaround — sowohl für das Migrate-Projekt als auch für die `masterSites`-Ressource, wobei jeweils eine stabile (nicht-preview) API-Version nötig war.
 
-![B2.5 – Azure CLI JSON-Ausgabe: hybridlink-migrate Projekt erfolgreich erstellt, provisioningState Succeeded, korrekte Tags](screenshots/B2-09-migrate-project-created.png)
+> 🔑 **Erkenntnis 11 — Nicht jeder Fehler lässt sich vollständig aufklären:** Trotz methodischer Eliminierung aller identifizierbaren Ursachen (Policy, Identität, RBAC) blieb die Appliance-Key-Generierung blockiert. In der Praxis ist es wichtiger, den Diagnoseprozess sauber zu dokumentieren und eine fundierte Entscheidung zum weiteren Vorgehen zu treffen, als eine Aufgabe unbegrenzt weiterzuverfolgen — dies spiegelt reale Grenzen von Studenten-Subscriptions und Preview-APIs wider.
 
-*Azure Migrate Projekt erfolgreich erstellt — provisioningState: Succeeded*
+| | |
+|--|--|
+| ![B2.5 – Azure CLI JSON-Ausgabe: hybridlink-migrate Projekt erfolgreich erstellt, provisioningState Succeeded, korrekte Tags](screenshots/B2-09-migrate-project-created.png) | ![B2.5 – Azure CLI JSON-Ausgabe: masterSites Ressource hlk-appliance erfolgreich erstellt, provisioningState Succeeded](screenshots/B2-10-mastersite-created.png) |
+| *Azure Migrate Projekt erfolgreich erstellt* | *masterSites-Ressource (Appliance-Grundlage) erfolgreich erstellt* |
 
 ---
 
@@ -291,6 +327,8 @@ In einer produktiven Umgebung mit stärkerer Host-Hardware oder einer bereits vo
 | 7 | 📦 **MARS Agent ≠ VM-Backup** | Datei-/Ordner-Backup ist der einzige Weg für on-prem Server ohne native VM |
 | 8 | 🖥️ **Migrate-Appliance ist ressourcenintensiv** | 16 GB RAM + 8 vCPU können lokale Lab-Umgebungen überfordern |
 | 9 | ⚙️ **CLI-Extensions können instabil sein** | Direkter ARM-Zugriff (`az resource create`) als robuster Fallback |
+| 10 | 🔍 **Systematische Ausschlussdiagnose statt Rätselraten** | Policy, Identität und RBAC einzeln getestet, um die Fehlerursache einzugrenzen |
+| 11 | 🚧 **Manche Fehler bleiben ungeklärt** | Studenten-Subscriptions und Preview-APIs haben reale, teils undokumentierte Grenzen |
 
 ---
 
@@ -333,7 +371,8 @@ hybridlink-arc-project/
     ├── B2-06-mars-agent-registered.png
     ├── B2-07-backup-schedule-configured.png
     ├── B2-08-first-backup-completed.png
-    └── B2-09-migrate-project-created.png
+    ├── B2-09-migrate-project-created.png
+    └── B2-10-mastersite-created.png
 ```
 
 ---
@@ -568,7 +607,9 @@ az backup vault create \
 ### Steps performed
 
 - Created Migrate project `hybridlink-migrate` via Azure CLI (geography: Sweden)
-- Prepared appliance deployment ("Using appliance" → "For Azure" → "Physical or other") up through the download step
+- Moved the on-prem VM via USB transfer to a second host (mini PC, Linux, VMware Workstation Pro, 32 GB RAM) to meet the appliance's resource requirements (16 GB RAM, 8 vCPU)
+- Successfully created the `Microsoft.OffAzure/masterSites` resource (`hlk-appliance`) via Azure CLI
+- Appliance key generation in the Azure Portal **remained permanently blocked** (see below) — the discovery phase could not be completed
 
 ```bash
 # Direct ARM resource creation was required due to CLI extension
@@ -588,24 +629,58 @@ az resource create \
     },
     "properties": {}
   }'
+
+# The masterSites resource (backing the appliance key generation)
+# also required a stable, non-preview API version to succeed
+az resource create \
+  --resource-group "rg-hybridlink-arc" \
+  --name "hlk-appliance" \
+  --resource-type "Microsoft.OffAzure/masterSites" \
+  --api-version "2023-06-06" \
+  --is-full-object \
+  --properties '{
+    "location": "swedencentral",
+    "tags": {
+      "Environment": "Lab",
+      "Project": "hybridlink-arc",
+      "Owner": "Emre"
+    },
+    "properties": {
+      "allowMultipleSites": false,
+      "publicNetworkAccess": "Enabled"
+    }
+  }'
 ```
 
-### ⚠️ Note — Host PC resource constraint
+### ⚠️ Root cause analysis — Appliance key generation permanently blocked
 
-The Azure Migrate appliance requires a dedicated VM with **16 GB RAM, 8 vCPUs, and ~80 GB storage** (Windows Server 2022). The host PC used (13th Gen Intel Core i7-1355U, ~15.7 GB total RAM, of which only ~1.4 GB was free at test time) couldn't meet this requirement alongside `SRV-HYBRID01`. The actual discovery/assessment phase was therefore **not** performed; a manual sizing estimate was done instead:
+Despite successfully creating every identifiable prerequisite, the Portal's **"Generate key"** button remained stuck in an infinite loading loop with no visible error. A systematic elimination process was carried out, testing three plausible hypotheses individually — **all three were ruled out**:
+
+| # | Hypothesis | Test | Result |
+|---|---|---|---|
+| 1 | A tag policy was blocking a hidden sub-resource | Temporarily set the policy to `DoNotEnforce` | ❌ Failure persisted — policy was not the cause |
+| 2 | Missing permission to create a Microsoft Entra ID App Registration | Created a test app via `az ad app create` | ✅ Succeeded — no restriction |
+| 3 | Missing RBAC role-assignment permission | Created a service principal, assigned it the Contributor role (`az role assignment create`) | ✅ Succeeded — no restriction |
+
+All test resources were cleaned up afterward, and the policy was reset to `Default`.
+
+**Outcome:** Despite systematically eliminating every plausible hypothesis (governance policy, identity permission, RBAC permission), the underlying root cause **could not be conclusively identified**. This is most likely an undocumented limitation of the `Microsoft.OffAzure` preview provider in combination with an Azure for Students subscription. The appliance's discovery/assessment phase could therefore not be completed; a manual sizing estimate was done instead:
 
 | On-prem resource | Recommended Azure VM SKU | Rationale |
 |---|---|---|
 | 2 vCPU, 4 GB RAM | `Standard_B2s` / `Standard_B2ats_v2` | Burstable, cost-effective for lab/test workloads |
 | 60 GB disk | Standard SSD (E15, 64 GB) | Sufficient performance for test workloads |
 
-In a production environment with stronger host hardware or an existing VMware vCenter infrastructure, this step would run fully automated via the appliance.
+In a production environment with a regular (non-student) subscription, or an existing VMware vCenter infrastructure, this step would likely run fully automated.
 
-> 🔑 **Key insight 10 — CLI extension preview status required an ARM fallback:** The `az migrate` command wasn't reliably available in the Cloud Shell environment used (preview extension, no documented `project create` command). Direct access via `az resource create` with the ARM resource type `Microsoft.Migrate/migrateProjects` and `--is-full-object` proved to be a robust workaround — including correcting the API version based on Azure's own error message.
+> 🔑 **Key insight 10 — CLI extension preview status required an ARM fallback:** The `az migrate` command wasn't reliably available in the Cloud Shell environment used. Direct access via `az resource create` with `--is-full-object` proved to be a robust workaround — for both the Migrate project and the `masterSites` resource, each requiring a stable (non-preview) API version.
 
-![B2.5 – Azure CLI JSON output: hybridlink-migrate project successfully created, provisioningState Succeeded, correct tags](screenshots/B2-09-migrate-project-created.png)
+> 🔑 **Key insight 11 — Not every failure can be fully explained:** Despite methodically eliminating every identifiable cause (policy, identity, RBAC), appliance key generation remained blocked. In practice, cleanly documenting the diagnostic process and making an informed decision on how to proceed matters more than pursuing a task indefinitely — this reflects the real-world limits of student subscriptions and preview APIs.
 
-*Azure Migrate project successfully created — provisioningState: Succeeded*
+| | |
+|--|--|
+| ![B2.5 – Azure CLI JSON output: hybridlink-migrate project successfully created, provisioningState Succeeded, correct tags](screenshots/B2-09-migrate-project-created.png) | ![B2.5 – Azure CLI JSON output: masterSites resource hlk-appliance successfully created, provisioningState Succeeded](screenshots/B2-10-mastersite-created.png) |
+| *Azure Migrate project successfully created* | *masterSites resource (appliance foundation) successfully created* |
 
 ---
 
@@ -622,6 +697,8 @@ In a production environment with stronger host hardware or an existing VMware vC
 | 7 | 📦 **MARS Agent ≠ VM backup** | File/folder backup is the only path for on-prem servers without native VM support |
 | 8 | 🖥️ **Migrate appliance is resource-intensive** | 16 GB RAM + 8 vCPU can overwhelm local lab environments |
 | 9 | ⚙️ **CLI extensions can be unstable** | Direct ARM access (`az resource create`) as a robust fallback |
+| 10 | 🔍 **Systematic elimination beats guessing** | Tested policy, identity, and RBAC individually to narrow down the root cause |
+| 11 | 🚧 **Some failures stay unresolved** | Student subscriptions and preview APIs have real, sometimes undocumented limits |
 
 ---
 
@@ -664,7 +741,8 @@ hybridlink-arc-project/
     ├── B2-06-mars-agent-registered.png
     ├── B2-07-backup-schedule-configured.png
     ├── B2-08-first-backup-completed.png
-    └── B2-09-migrate-project-created.png
+    ├── B2-09-migrate-project-created.png
+    └── B2-10-mastersite-created.png
 ```
 
 ---
