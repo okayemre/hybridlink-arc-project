@@ -254,11 +254,12 @@ Ein Backup ist nur so gut wie seine nachgewiesene Wiederherstellbarkeit. Daher w
 - Migrate-Projekt `hybridlink-migrate` via Azure CLI erstellt (Geography: Sweden)
 - On-Prem-VM per USB-Transfer auf einen zweiten Host (Mini-PC, Linux, VMware Workstation Pro, 32 GB RAM) verschoben, um die Ressourcenanforderungen der Appliance (16 GB RAM, 8 vCPU) erfüllen zu können
 - `Microsoft.OffAzure/masterSites`-Ressource (`hlk-appliance`) via Azure CLI erfolgreich erstellt
-- Appliance-Key-Generierung im Azure Portal **dauerhaft blockiert** (siehe unten) — Discovery-Phase konnte nicht durchgeführt werden
+- **Weg 1 — Appliance:** Key-Generierung im Azure Portal **dauerhaft blockiert** (Endlosschleife, kein Fehler)
+- **Weg 2 — CSV Import (appliance-frei):** `Microsoft.OffAzure/importSites` sowie beide `Microsoft.Migrate/migrateProjects/Solutions`-Ressourcen (Discovery + Assessment) via CLI nachträglich erstellt, um die Portal-Voraussetzungen zu erfüllen — **Import blieb dennoch auf "Preparing your project for importing machines" hängen**
+- Offizielles Azure-Support-Ticket eröffnet, um die Ursache zu klären (siehe unten)
 
 ```bash
-# Direct ARM resource creation was required due to CLI extension
-# and API-version issues encountered during this step
+# Migrate project (see Bonus 2.1 pattern: stable API version + --is-full-object)
 az resource create \
   --resource-group "rg-hybridlink-arc" \
   --name "hybridlink-migrate" \
@@ -267,16 +268,11 @@ az resource create \
   --is-full-object \
   --properties '{
     "location": "swedencentral",
-    "tags": {
-      "Environment": "Lab",
-      "Project": "hybridlink-arc",
-      "Owner": "Emre"
-    },
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
     "properties": {}
   }'
 
-# The masterSites resource (backing the appliance key generation)
-# also required a stable, non-preview API version to succeed
+# masterSites (backing appliance key generation)
 az resource create \
   --resource-group "rg-hybridlink-arc" \
   --name "hlk-appliance" \
@@ -285,47 +281,85 @@ az resource create \
   --is-full-object \
   --properties '{
     "location": "swedencentral",
-    "tags": {
-      "Environment": "Lab",
-      "Project": "hybridlink-arc",
-      "Owner": "Emre"
-    },
-    "properties": {
-      "allowMultipleSites": false,
-      "publicNetworkAccess": "Enabled"
-    }
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
+    "properties": { "allowMultipleSites": false, "publicNetworkAccess": "Enabled" }
+  }'
+
+# importSites (backing CSV-based, appliance-free discovery)
+az resource create \
+  --resource-group "rg-hybridlink-arc" \
+  --name "hlk-import-site" \
+  --resource-type "Microsoft.OffAzure/importSites" \
+  --api-version "2023-06-06" \
+  --is-full-object \
+  --properties '{
+    "location": "swedencentral",
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
+    "properties": {}
+  }'
+
+# Discovery + Assessment "Solutions" that a normal Portal project-creation
+# flow would have added automatically — missing because the project was
+# created directly via CLI
+az resource create \
+  --resource-group "rg-hybridlink-arc" \
+  --name "hybridlink-migrate/Servers-Discovery-ServerDiscovery" \
+  --resource-type "Microsoft.Migrate/migrateProjects/Solutions" \
+  --api-version "2020-05-01" \
+  --is-full-object \
+  --properties '{
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
+    "properties": { "tool": "ServerDiscovery", "purpose": "Discovery", "goal": "Servers", "status": "Active" }
+  }'
+
+az resource create \
+  --resource-group "rg-hybridlink-arc" \
+  --name "hybridlink-migrate/Servers-Assessment-ServerAssessment" \
+  --resource-type "Microsoft.Migrate/migrateProjects/Solutions" \
+  --api-version "2020-05-01" \
+  --is-full-object \
+  --properties '{
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
+    "properties": { "tool": "ServerAssessment", "purpose": "Assessment", "goal": "Servers", "status": "Active" }
   }'
 ```
 
-### ⚠️ Root-Cause-Analyse — Appliance-Key-Generierung dauerhaft blockiert
+### ⚠️ Root-Cause-Analyse — Zwei unabhängige Wege, ein gemeinsamer Blocker
 
-Trotz erfolgreicher Erstellung aller identifizierbaren Voraussetzungen blieb der Portal-Button **"Generate key"** in einer Endlosschleife hängen, ohne einen sichtbaren Fehler auszugeben. Es wurde eine systematische Ausschlussdiagnose durchgeführt, bei der drei plausible Hypothesen einzeln getestet und **alle widerlegt** wurden:
+Beide Discovery-Wege (appliance-basiert und CSV-Import) blieben unabhängig voneinander in einer Endlosschleife hängen, ohne sichtbaren Fehler. Es wurde eine systematische Ausschlussdiagnose durchgeführt:
 
 | # | Hypothese | Test | Ergebnis |
 |---|---|---|---|
-| 1 | Tag-Policy blockiert eine verdeckte Sub-Ressource | Policy temporär auf `DoNotEnforce` gesetzt | ❌ Fehler bestand weiterhin — Policy nicht die Ursache |
+| 1 | Tag-Policy blockiert eine verdeckte Sub-Ressource | Policy temporär auf `DoNotEnforce` gesetzt | ❌ Fehler bestand weiterhin |
 | 2 | Fehlende Berechtigung zur Erstellung einer Microsoft Entra ID App Registration | Test-App via `az ad app create` erstellt | ✅ Erfolgreich — keine Einschränkung |
-| 3 | Fehlende RBAC-Rollenzuweisungsberechtigung | Service Principal erstellt, Contributor-Rolle zugewiesen (`az role assignment create`) | ✅ Erfolgreich — keine Einschränkung |
+| 3 | Fehlende RBAC-Rollenzuweisungsberechtigung | Service Principal erstellt, Contributor-Rolle zugewiesen | ✅ Erfolgreich — keine Einschränkung |
+| 4 | Fehlende Backend-Ressourcen (masterSites, importSites, Solutions) | Alle vier Ressourcen einzeln via CLI nachgebaut | ✅ Alle erfolgreich erstellt — Blockade bestand trotzdem weiter |
 
 Alle Testressourcen wurden anschließend bereinigt, die Policy wieder auf `Default` zurückgesetzt.
 
-**Ergebnis:** Die zugrunde liegende Ursache konnte trotz systematischer Eliminierung aller naheliegenden Hypothesen (Governance-Policy, Identitätsberechtigung, RBAC-Berechtigung) **nicht abschließend identifiziert werden**. Es handelt sich vermutlich um eine nicht dokumentierte Einschränkung des `Microsoft.OffAzure`-Preview-Providers in Kombination mit einer Azure for Students Subscription. Die Discovery/Assessment-Phase der Appliance konnte daher nicht durchgeführt werden; stattdessen erfolgte eine manuelle Sizing-Einschätzung:
+**Klärungsversuch über offiziellen Azure-Support:** Ein Support-Ticket wurde eröffnet, um die Ursache direkt bei Microsoft zu klären. Dabei zeigte sich ein entscheidender, offiziell dokumentierter Fakt: *"With your Basic support plan, you can create support requests for billing, subscription management, and quota increase. For technical support, upgrade to a paid support plan."* — **Azure-for-Students-Abonnements laufen standardmäßig im Basic-Support-Tarif, der technische Support-Anfragen wie diese grundsätzlich ausschließt.**
+
+**Ergebnis:** Die genaue technische Ursache konnte trotz vollständiger Eliminierung aller identifizierbaren Hypothesen (Policy, Identität, RBAC, Backend-Ressourcen) **nicht abschließend geklärt werden** — und laut Microsofts eigenem Support-System ist eine offizielle Klärung mit einem kostenlosen Studenten-Abonnement **nicht vorgesehen**. Dies bestätigt strukturell, dass es sich um eine Einschränkung auf Ebene des Subscription-Typs handelt, nicht um einen Konfigurationsfehler unsererseits. Die Discovery/Assessment-Phase wurde daher **nicht** durchgeführt; stattdessen erfolgte eine manuelle Sizing-Einschätzung:
 
 | On-Prem-Ressource | Empfohlene Azure-VM-SKU | Begründung |
 |---|---|---|
 | 2 vCPU, 4 GB RAM | `Standard_B2s` / `Standard_B2ats_v2` | Burstable, kosteneffizient für Lab-/Testlasten |
 | 60 GB Disk | Standard SSD (E15, 64 GB) | Ausreichende Performance für Test-Workloads |
 
-In einer produktiven Umgebung mit einer regulären (Nicht-Studenten-)Subscription oder einer bereits vorhandenen VMware-vCenter-Infrastruktur würde dieser Schritt voraussichtlich vollständig automatisiert ablaufen.
+In einer produktiven Umgebung mit einer regulären (kostenpflichtigen) Subscription mit technischem Support-Zugang würde dieser Schritt voraussichtlich vollständig automatisiert ablaufen.
 
-> 🔑 **Erkenntnis 10 — CLI-Extension-Preview-Status erfordert Fallback auf ARM:** Der `az migrate`-Befehl war in der genutzten Cloud-Shell-Umgebung nicht zuverlässig verfügbar. Direkter Zugriff über `az resource create` mit `--is-full-object` erwies sich als robuster Workaround — sowohl für das Migrate-Projekt als auch für die `masterSites`-Ressource, wobei jeweils eine stabile (nicht-preview) API-Version nötig war.
+> 🔑 **Erkenntnis 10 — CLI-Extension-Preview-Status erfordert Fallback auf ARM:** Der `az migrate`-Befehl war nicht zuverlässig verfügbar. Direkter Zugriff über `az resource create` mit `--is-full-object` und einer stabilen (nicht-preview) API-Version erwies sich als robuster, wiederholbarer Workaround — angewendet auf vier verschiedene `Microsoft.OffAzure`/`Microsoft.Migrate`-Ressourcentypen.
 
-> 🔑 **Erkenntnis 11 — Nicht jeder Fehler lässt sich vollständig aufklären:** Trotz methodischer Eliminierung aller identifizierbaren Ursachen (Policy, Identität, RBAC) blieb die Appliance-Key-Generierung blockiert. In der Praxis ist es wichtiger, den Diagnoseprozess sauber zu dokumentieren und eine fundierte Entscheidung zum weiteren Vorgehen zu treffen, als eine Aufgabe unbegrenzt weiterzuverfolgen — dies spiegelt reale Grenzen von Studenten-Subscriptions und Preview-APIs wider.
+> 🔑 **Erkenntnis 11 — Nicht jeder Fehler lässt sich vollständig aufklären:** Trotz methodischer Eliminierung aller identifizierbaren Ursachen blieb die Blockade bestehen. In der Praxis ist es wichtiger, den Diagnoseprozess sauber zu dokumentieren und eine fundierte Entscheidung zum weiteren Vorgehen zu treffen, als eine Aufgabe unbegrenzt weiterzuverfolgen.
+
+> 🔑 **Erkenntnis 12 — Freie Subscriptions haben auch eingeschränkten Support-Zugang:** Azure for Students läuft im Basic-Support-Tarif, der technische Support-Tickets kategorisch ausschließt. Das bedeutet: Bei ungeklärten Plattformfehlern in Studenten-Abonnements gibt es **keinen offiziellen Eskalationsweg** — nur kostenpflichtige Support-Pläne oder die (unverbindliche) Azure-Community bieten eine Anlaufstelle. Dies ist ein relevanter Faktor bei der Wahl einer Subscription für produktionsnahe Lernprojekte.
 
 | | |
 |--|--|
 | ![B2.5 – Azure CLI JSON-Ausgabe: hybridlink-migrate Projekt erfolgreich erstellt, provisioningState Succeeded, korrekte Tags](screenshots/B2-09-migrate-project-created.png) | ![B2.5 – Azure CLI JSON-Ausgabe: masterSites Ressource hlk-appliance erfolgreich erstellt, provisioningState Succeeded](screenshots/B2-10-mastersite-created.png) |
 | *Azure Migrate Projekt erfolgreich erstellt* | *masterSites-Ressource (Appliance-Grundlage) erfolgreich erstellt* |
+| ![B2.5 – Azure Support Request Formular: Basic-Support-Plan schließt technische Anfragen aus](screenshots/B2-12-support-basic-plan-limitation.png) | |
+| *Support-Ticket bestätigt: Basic-Support-Plan schließt technische Anfragen aus* |
 
 ---
 
@@ -344,6 +378,7 @@ In einer produktiven Umgebung mit einer regulären (Nicht-Studenten-)Subscriptio
 | 9 | ⚙️ **CLI-Extensions können instabil sein** | Direkter ARM-Zugriff (`az resource create`) als robuster Fallback |
 | 10 | 🔍 **Systematische Ausschlussdiagnose statt Rätselraten** | Policy, Identität und RBAC einzeln getestet, um die Fehlerursache einzugrenzen |
 | 11 | 🚧 **Manche Fehler bleiben ungeklärt** | Studenten-Subscriptions und Preview-APIs haben reale, teils undokumentierte Grenzen |
+| 12 | 🎫 **Freier Support-Tarif schließt technische Tickets aus** | Azure for Students (Basic Support) bietet keinen offiziellen Eskalationsweg für Plattformfehler |
 
 ---
 
@@ -388,7 +423,8 @@ hybridlink-arc-project/
     ├── B2-08-first-backup-completed.png
     ├── B2-09-migrate-project-created.png
     ├── B2-10-mastersite-created.png
-    └── B2-11-restore-test-completed.png
+    ├── B2-11-restore-test-completed.png
+    └── B2-12-support-basic-plan-limitation.png
 ```
 
 ---
@@ -640,11 +676,12 @@ A backup is only as good as its proven recoverability. A full restore test was t
 - Created Migrate project `hybridlink-migrate` via Azure CLI (geography: Sweden)
 - Moved the on-prem VM via USB transfer to a second host (mini PC, Linux, VMware Workstation Pro, 32 GB RAM) to meet the appliance's resource requirements (16 GB RAM, 8 vCPU)
 - Successfully created the `Microsoft.OffAzure/masterSites` resource (`hlk-appliance`) via Azure CLI
-- Appliance key generation in the Azure Portal **remained permanently blocked** (see below) — the discovery phase could not be completed
+- **Path 1 — Appliance:** key generation in the Azure Portal **remained permanently blocked** (infinite loop, no error)
+- **Path 2 — CSV import (appliance-free):** created `Microsoft.OffAzure/importSites` and both `Microsoft.Migrate/migrateProjects/Solutions` resources (Discovery + Assessment) via CLI afterward, to satisfy the Portal's prerequisites — **import still got stuck on "Preparing your project for importing machines"**
+- Opened an official Azure support ticket to clarify the root cause (see below)
 
 ```bash
-# Direct ARM resource creation was required due to CLI extension
-# and API-version issues encountered during this step
+# Migrate project (same pattern as Bonus 2.1: stable API version + --is-full-object)
 az resource create \
   --resource-group "rg-hybridlink-arc" \
   --name "hybridlink-migrate" \
@@ -653,16 +690,11 @@ az resource create \
   --is-full-object \
   --properties '{
     "location": "swedencentral",
-    "tags": {
-      "Environment": "Lab",
-      "Project": "hybridlink-arc",
-      "Owner": "Emre"
-    },
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
     "properties": {}
   }'
 
-# The masterSites resource (backing the appliance key generation)
-# also required a stable, non-preview API version to succeed
+# masterSites (backing appliance key generation)
 az resource create \
   --resource-group "rg-hybridlink-arc" \
   --name "hlk-appliance" \
@@ -671,47 +703,85 @@ az resource create \
   --is-full-object \
   --properties '{
     "location": "swedencentral",
-    "tags": {
-      "Environment": "Lab",
-      "Project": "hybridlink-arc",
-      "Owner": "Emre"
-    },
-    "properties": {
-      "allowMultipleSites": false,
-      "publicNetworkAccess": "Enabled"
-    }
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
+    "properties": { "allowMultipleSites": false, "publicNetworkAccess": "Enabled" }
+  }'
+
+# importSites (backing CSV-based, appliance-free discovery)
+az resource create \
+  --resource-group "rg-hybridlink-arc" \
+  --name "hlk-import-site" \
+  --resource-type "Microsoft.OffAzure/importSites" \
+  --api-version "2023-06-06" \
+  --is-full-object \
+  --properties '{
+    "location": "swedencentral",
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
+    "properties": {}
+  }'
+
+# Discovery + Assessment "Solutions" that a normal Portal project-creation
+# flow would have added automatically — missing because the project was
+# created directly via CLI
+az resource create \
+  --resource-group "rg-hybridlink-arc" \
+  --name "hybridlink-migrate/Servers-Discovery-ServerDiscovery" \
+  --resource-type "Microsoft.Migrate/migrateProjects/Solutions" \
+  --api-version "2020-05-01" \
+  --is-full-object \
+  --properties '{
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
+    "properties": { "tool": "ServerDiscovery", "purpose": "Discovery", "goal": "Servers", "status": "Active" }
+  }'
+
+az resource create \
+  --resource-group "rg-hybridlink-arc" \
+  --name "hybridlink-migrate/Servers-Assessment-ServerAssessment" \
+  --resource-type "Microsoft.Migrate/migrateProjects/Solutions" \
+  --api-version "2020-05-01" \
+  --is-full-object \
+  --properties '{
+    "tags": { "Environment": "Lab", "Project": "hybridlink-arc", "Owner": "Emre" },
+    "properties": { "tool": "ServerAssessment", "purpose": "Assessment", "goal": "Servers", "status": "Active" }
   }'
 ```
 
-### ⚠️ Root cause analysis — Appliance key generation permanently blocked
+### ⚠️ Root cause analysis — two independent paths, one shared blocker
 
-Despite successfully creating every identifiable prerequisite, the Portal's **"Generate key"** button remained stuck in an infinite loading loop with no visible error. A systematic elimination process was carried out, testing three plausible hypotheses individually — **all three were ruled out**:
+Both discovery paths (appliance-based and CSV import) got stuck in an infinite loop independently, with no visible error. A systematic elimination process was carried out:
 
 | # | Hypothesis | Test | Result |
 |---|---|---|---|
-| 1 | A tag policy was blocking a hidden sub-resource | Temporarily set the policy to `DoNotEnforce` | ❌ Failure persisted — policy was not the cause |
+| 1 | A tag policy was blocking a hidden sub-resource | Temporarily set the policy to `DoNotEnforce` | ❌ Failure persisted |
 | 2 | Missing permission to create a Microsoft Entra ID App Registration | Created a test app via `az ad app create` | ✅ Succeeded — no restriction |
-| 3 | Missing RBAC role-assignment permission | Created a service principal, assigned it the Contributor role (`az role assignment create`) | ✅ Succeeded — no restriction |
+| 3 | Missing RBAC role-assignment permission | Created a service principal, assigned it the Contributor role | ✅ Succeeded — no restriction |
+| 4 | Missing backend resources (masterSites, importSites, Solutions) | Recreated all four resources individually via CLI | ✅ All succeeded — the blocker persisted regardless |
 
 All test resources were cleaned up afterward, and the policy was reset to `Default`.
 
-**Outcome:** Despite systematically eliminating every plausible hypothesis (governance policy, identity permission, RBAC permission), the underlying root cause **could not be conclusively identified**. This is most likely an undocumented limitation of the `Microsoft.OffAzure` preview provider in combination with an Azure for Students subscription. The appliance's discovery/assessment phase could therefore not be completed; a manual sizing estimate was done instead:
+**Attempted clarification via official Azure support:** A support ticket was opened to clarify the root cause directly with Microsoft. This surfaced a decisive, officially documented fact: *"With your Basic support plan, you can create support requests for billing, subscription management, and quota increase. For technical support, upgrade to a paid support plan."* — **Azure for Students subscriptions run on the Basic support tier by default, which categorically excludes technical support requests like this one.**
+
+**Outcome:** The precise technical root cause **could not be conclusively resolved** despite fully eliminating every identifiable hypothesis (policy, identity, RBAC, backend resources) — and according to Microsoft's own support system, an official clarification isn't available on a free student subscription. This structurally confirms that the limitation sits at the subscription-tier level, not in our own configuration. The discovery/assessment phase was therefore **not** completed; a manual sizing estimate was done instead:
 
 | On-prem resource | Recommended Azure VM SKU | Rationale |
 |---|---|---|
 | 2 vCPU, 4 GB RAM | `Standard_B2s` / `Standard_B2ats_v2` | Burstable, cost-effective for lab/test workloads |
 | 60 GB disk | Standard SSD (E15, 64 GB) | Sufficient performance for test workloads |
 
-In a production environment with a regular (non-student) subscription, or an existing VMware vCenter infrastructure, this step would likely run fully automated.
+In a production environment with a regular (paid) subscription with technical support access, this step would likely run fully automated.
 
-> 🔑 **Key insight 10 — CLI extension preview status required an ARM fallback:** The `az migrate` command wasn't reliably available in the Cloud Shell environment used. Direct access via `az resource create` with `--is-full-object` proved to be a robust workaround — for both the Migrate project and the `masterSites` resource, each requiring a stable (non-preview) API version.
+> 🔑 **Key insight 10 — CLI extension preview status required an ARM fallback:** The `az migrate` command wasn't reliably available. Direct access via `az resource create` with `--is-full-object` and a stable (non-preview) API version proved to be a robust, repeatable workaround — applied across four different `Microsoft.OffAzure`/`Microsoft.Migrate` resource types.
 
-> 🔑 **Key insight 11 — Not every failure can be fully explained:** Despite methodically eliminating every identifiable cause (policy, identity, RBAC), appliance key generation remained blocked. In practice, cleanly documenting the diagnostic process and making an informed decision on how to proceed matters more than pursuing a task indefinitely — this reflects the real-world limits of student subscriptions and preview APIs.
+> 🔑 **Key insight 11 — Not every failure can be fully explained:** Despite methodically eliminating every identifiable cause, the blocker remained. In practice, cleanly documenting the diagnostic process and making an informed decision on how to proceed matters more than pursuing a task indefinitely.
+
+> 🔑 **Key insight 12 — Free subscriptions also come with restricted support access:** Azure for Students runs on the Basic support tier, which categorically excludes technical support tickets. That means unresolved platform-level errors on student subscriptions have **no official escalation path** — only paid support plans or the (non-binding) Azure Community offer a way forward. This is a relevant factor when choosing a subscription for production-adjacent learning projects.
 
 | | |
 |--|--|
 | ![B2.5 – Azure CLI JSON output: hybridlink-migrate project successfully created, provisioningState Succeeded, correct tags](screenshots/B2-09-migrate-project-created.png) | ![B2.5 – Azure CLI JSON output: masterSites resource hlk-appliance successfully created, provisioningState Succeeded](screenshots/B2-10-mastersite-created.png) |
 | *Azure Migrate project successfully created* | *masterSites resource (appliance foundation) successfully created* |
+| ![B2.5 – Azure support request form: Basic support plan excludes technical requests](screenshots/B2-12-support-basic-plan-limitation.png) | |
+| *Support ticket confirms: Basic support plan excludes technical requests* |
 
 ---
 
@@ -730,6 +800,7 @@ In a production environment with a regular (non-student) subscription, or an exi
 | 9 | ⚙️ **CLI extensions can be unstable** | Direct ARM access (`az resource create`) as a robust fallback |
 | 10 | 🔍 **Systematic elimination beats guessing** | Tested policy, identity, and RBAC individually to narrow down the root cause |
 | 11 | 🚧 **Some failures stay unresolved** | Student subscriptions and preview APIs have real, sometimes undocumented limits |
+| 12 | 🎫 **Free support tier excludes technical tickets** | Azure for Students (Basic support) offers no official escalation path for platform errors |
 
 ---
 
@@ -774,7 +845,8 @@ hybridlink-arc-project/
     ├── B2-08-first-backup-completed.png
     ├── B2-09-migrate-project-created.png
     ├── B2-10-mastersite-created.png
-    └── B2-11-restore-test-completed.png
+    ├── B2-11-restore-test-completed.png
+    └── B2-12-support-basic-plan-limitation.png
 ```
 
 ---
