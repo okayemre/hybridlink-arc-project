@@ -36,7 +36,7 @@ Dieses Projekt basiert auf einer offiziellen Lab-Setup-Anleitung (Basis-Server-V
 | 🔵 | [Bonus 2.2 — Azure Arc Onboarding](#bonus-22--azure-arc-onboarding) | Server-Registrierung bei Azure | Eigene Erweiterung | ✅ |
 | 🔵 | [Bonus 2.3 — Policy, Monitor & Defender](#bonus-23--policy-monitor--defender) | Governance & Sicherheit | Eigene Erweiterung | ✅ |
 | 🔵 | [Bonus 2.4 — Azure Backup (MARS Agent)](#bonus-24--azure-backup-mars-agent) | On-Prem-Backup in die Cloud | Eigene Erweiterung | ✅ |
-| 🔵 | [Bonus 2.5 — Azure Migrate](#bonus-25--azure-migrate) | Migrationsbewertung | Eigene Erweiterung | ⚠️ |
+| 🔵 | [Bonus 2.5 — Azure Migrate](#bonus-25--azure-migrate) | Migrationsbewertung | Eigene Erweiterung | ✅ |
 | 🔵 | [Bonus 3 — Microsoft Entra Cloud Sync](#bonus-3--microsoft-entra-cloud-sync) | AD-Benutzer-Synchronisation zu Entra ID | Eigene Erweiterung | ✅ |
 
 > ℹ️ **Hinweis zur Struktur:** *Teil 1* und *Bonus 1* stammen direkt aus der offiziellen Lab-Setup-Anleitung. *Bonus 2* (Azure-Hybrid-Integration) ist **nicht** Teil des Original-Dokuments, sondern eine eigenständige Erweiterung, um den vollen Hybrid-Cloud-Lebenszyklus abzubilden.
@@ -53,7 +53,7 @@ Dieses Projekt basiert auf einer offiziellen Lab-Setup-Anleitung (Basis-Server-V
 | Resource Group | `rg-hybridlink-arc` | Sweden Central |
 | Azure Arc | `SRV-HYBRID01` | Connected Machine Agent, Public Endpoint |
 | Recovery Services Vault | `rsv-hybridlink-backup` | Sweden Central · LRS |
-| Azure Migrate Projekt | `hybridlink-migrate` | Geography: Sweden |
+| Azure Migrate Projekt | `hybridlink-migrate` (blockiert) / `migrate-lab` (erfolgreich) | Geography: Sweden · Empfohlene SKU: `Standard_D2as_v5` · $50.01/Monat |
 | Active Directory | `hybridlink.local` | Forest/Domain, NetBIOS `HYBRIDLINK` |
 | Member Server | `SRV-SYNC01` | Domain-Mitglied (kein DC), Provisioning Agent Host |
 | Microsoft Entra Cloud Sync | `hybridlink.local` Konfiguration | Scope: OU `HybridLink-Users`, Password Hash Sync aktiviert |
@@ -257,9 +257,11 @@ Ein Backup ist nur so gut wie seine nachgewiesene Wiederherstellbarkeit. Daher w
 - Migrate-Projekt `hybridlink-migrate` via Azure CLI erstellt (Geography: Sweden)
 - On-Prem-VM per USB-Transfer auf einen zweiten Host (Mini-PC, Linux, VMware Workstation Pro, 32 GB RAM) verschoben, um die Ressourcenanforderungen der Appliance (16 GB RAM, 8 vCPU) erfüllen zu können
 - `Microsoft.OffAzure/masterSites`-Ressource (`hlk-appliance`) via Azure CLI erfolgreich erstellt
-- **Weg 1 — Appliance:** Key-Generierung im Azure Portal **dauerhaft blockiert** (Endlosschleife, kein Fehler)
+- **Weg 1 — Appliance:** Key-Generierung im Azure Portal in `rg-hybridlink-arc` **dauerhaft blockiert** (Endlosschleife, kein Fehler)
 - **Weg 2 — CSV Import (appliance-frei):** `Microsoft.OffAzure/importSites` sowie beide `Microsoft.Migrate/migrateProjects/Solutions`-Ressourcen (Discovery + Assessment) via CLI nachträglich erstellt, um die Portal-Voraussetzungen zu erfüllen — **Import blieb dennoch auf "Preparing your project for importing machines" hängen**
 - Offizielles Azure-Support-Ticket eröffnet, um die Ursache zu klären (siehe unten)
+- **Durchbruch:** Appliance-Key-Generierung in einer komplett policy-freien, neu erstellten Resource Group getestet — **sofort erfolgreich**, Root Cause damit bestätigt
+- Appliance vollständig auf einer dedizierten VM bereitgestellt, Discovery erfolgreich durchgeführt und ein echtes Assessment mit konkreter VM-SKU-Empfehlung erzeugt
 
 ```bash
 # Migrate project (see Bonus 2.1 pattern: stable API version + --is-full-object)
@@ -337,32 +339,70 @@ Beide Discovery-Wege (appliance-basiert und CSV-Import) blieben unabhängig vone
 | 2 | Fehlende Berechtigung zur Erstellung einer Microsoft Entra ID App Registration | Test-App via `az ad app create` erstellt | ✅ Erfolgreich — keine Einschränkung |
 | 3 | Fehlende RBAC-Rollenzuweisungsberechtigung | Service Principal erstellt, Contributor-Rolle zugewiesen | ✅ Erfolgreich — keine Einschränkung |
 | 4 | Fehlende Backend-Ressourcen (masterSites, importSites, Solutions) | Alle vier Ressourcen einzeln via CLI nachgebaut | ✅ Alle erfolgreich erstellt — Blockade bestand trotzdem weiter |
+| 5 | MSA-backed/"Guest"-Identität blockiert den Zugriff (analog zum Cloud-Sync-Fund in Bonus 3) | Appliance-Key-Generierung mit nativem `emreadmin`-Konto (statt `okayemre@hotmail.com`) wiederholt | ❌ Identischer Fehler — Hypothese widerlegt |
+| 6 | Die bloße **Anwesenheit** der Deny-Tag-Policy in `rg-hybridlink-arc` beeinflusst den internen Portal-Workflow, unabhängig vom CLI-Workaround | Appliance-Key-Generierung in einer komplett neuen, policy-freien Resource Group (`rg-migrate-test-clean`) wiederholt | ✅ **Key sofort erfolgreich generiert — Root Cause bestätigt** |
 
 Alle Testressourcen wurden anschließend bereinigt, die Policy wieder auf `Default` zurückgesetzt.
 
-**Klärungsversuch über offiziellen Azure-Support:** Ein Support-Ticket wurde eröffnet, um die Ursache direkt bei Microsoft zu klären. Dabei zeigte sich ein entscheidender, offiziell dokumentierter Fakt: *"With your Basic support plan, you can create support requests for billing, subscription management, and quota increase. For technical support, upgrade to a paid support plan."* — **Azure-for-Students-Abonnements laufen standardmäßig im Basic-Support-Tarif, der technische Support-Anfragen wie diese grundsätzlich ausschließt.**
+**Klärungsversuch über offiziellen Azure-Support:** Ein Support-Ticket wurde eröffnet, um die Ursache direkt bei Microsoft zu klären. Dabei zeigte sich ein entscheidender, offiziell dokumentierter Fakt: *"With your Basic support plan, you can create support requests for billing, subscription management, and quota increase. For technical support, upgrade to a paid support plan."* — **Azure-for-Students-Abonnements laufen standardmäßig im Basic-Support-Tarif, der technische Support-Anfragen wie diese grundsätzlich ausschließt.** Da eine offizielle Klärung damit ausschied, wurde die Ausschlussdiagnose in Eigenregie fortgesetzt (Hypothesen 5 und 6).
 
-**Ergebnis:** Die genaue technische Ursache konnte trotz vollständiger Eliminierung aller identifizierbaren Hypothesen (Policy, Identität, RBAC, Backend-Ressourcen) **nicht abschließend geklärt werden** — und laut Microsofts eigenem Support-System ist eine offizielle Klärung mit einem kostenlosen Studenten-Abonnement **nicht vorgesehen**. Dies bestätigt strukturell, dass es sich um eine Einschränkung auf Ebene des Subscription-Typs handelt, nicht um einen Konfigurationsfehler unsererseits. Die Discovery/Assessment-Phase wurde daher **nicht** durchgeführt; stattdessen erfolgte eine manuelle Sizing-Einschätzung:
+**Root Cause bestätigt:** Der entscheidende Test war Hypothese 6 — Appliance-Key-Generierung in einer Resource Group **ganz ohne** die "Require a tag"-Policy. Das Ergebnis war eindeutig und sofort: grünes Häkchen, *"All resources have been created successfully."* Die Erklärung dafür ist technisch konsistent mit allem, was zuvor beobachtet wurde: Der Portal-Wizard erstellt seine Backend-Ressourcen **automatisch, ohne Tags** — genau das, was die Deny-Policy blockiert. Unsere eigenen `az resource create --is-full-object`-Aufrufe funktionierten nur deshalb, weil wir die Tags dabei selbst mitgeliefert haben. `DoNotEnforce` reicht dabei nicht aus, um dieses Verhalten zu neutralisieren — nur die vollständige Abwesenheit der Policy-Zuweisung tut das. Die MSA-Identitätshypothese (5) ist damit ebenfalls endgültig vom Tisch.
 
-| On-Prem-Ressource | Empfohlene Azure-VM-SKU | Begründung |
+Bis zu diesem Durchbruch diente eine manuelle Sizing-Einschätzung als Zwischenlösung:
+
+| On-Prem-Ressource | Manuell geschätzte Azure-VM-SKU | Begründung |
 |---|---|---|
 | 2 vCPU, 4 GB RAM | `Standard_B2s` / `Standard_B2ats_v2` | Burstable, kosteneffizient für Lab-/Testlasten |
 | 60 GB Disk | Standard SSD (E15, 64 GB) | Ausreichende Performance für Test-Workloads |
 
-In einer produktiven Umgebung mit einer regulären (kostenpflichtigen) Subscription mit technischem Support-Zugang würde dieser Schritt voraussichtlich vollständig automatisiert ablaufen.
+### ✅ Durchbruch — Appliance-Bereitstellung, Discovery und echtes Assessment
 
-> 🔑 **Erkenntnis 10 — CLI-Extension-Preview-Status erfordert Fallback auf ARM:** Der `az migrate`-Befehl war nicht zuverlässig verfügbar. Direkter Zugriff über `az resource create` mit `--is-full-object` und einer stabilen (nicht-preview) API-Version erwies sich als robuster, wiederholbarer Workaround — angewendet auf vier verschiedene `Microsoft.OffAzure`/`Microsoft.Migrate`-Ressourcentypen.
+Mit bestätigtem Root Cause wurde die komplette Discovery/Assessment-Kette in der sauberen Resource Group (`rg-migrate-test-clean`, Projekt `migrate-lab`) end-to-end durchgeführt — inklusive einer vollständigen, produktionsnahen Appliance-Bereitstellung (nicht nur Key-Generierung).
 
-> 🔑 **Erkenntnis 11 — Nicht jeder Fehler lässt sich vollständig aufklären:** Trotz methodischer Eliminierung aller identifizierbaren Ursachen blieb die Blockade bestehen. In der Praxis ist es wichtiger, den Diagnoseprozess sauber zu dokumentieren und eine fundierte Entscheidung zum weiteren Vorgehen zu treffen, als eine Aufgabe unbegrenzt weiterzuverfolgen.
+**Appliance-VM:** Eine neue, dedizierte VM `MIG-APPLIANCE01` wurde auf dem Mini-PC erstellt (Windows Server 2025 Standard Evaluation, 8 vCPU, 16 GB RAM, 80 GB Disk, Bridged-Netzwerk) — passend zu den offiziellen Appliance-Mindestanforderungen. Die Appliance wurde über das offizielle PowerShell-Installationsskript (`AzureMigrateInstaller.ps1`, Szenario "Physical or other", Cloud "Azure Public") eingerichtet und erfolgreich beim Projekt registriert.
 
-> 🔑 **Erkenntnis 12 — Freie Subscriptions haben auch eingeschränkten Support-Zugang:** Azure for Students läuft im Basic-Support-Tarif, der technische Support-Tickets kategorisch ausschließt. Das bedeutet: Bei ungeklärten Plattformfehlern in Studenten-Abonnements gibt es **keinen offiziellen Eskalationsweg** — nur kostenpflichtige Support-Pläne oder die (unverbindliche) Azure-Community bieten eine Anlaufstelle. Dies ist ein relevanter Faktor bei der Wahl einer Subscription für produktionsnahe Lernprojekte.
+**Hindernis A — Netzwerksegmentierung:** `SRV-HYBRID01` lief bislang ausschließlich im VMware-NAT-Netz (`192.168.35.0/24`) des Windows-PC-Hosts — für die Appliance auf dem Mini-PC (Bridged-Netzwerk) **unerreichbar**, da NAT-Netze per Definition isoliert sind. Lösung: ein zweiter, Bridged-Netzwerkadapter wurde `SRV-HYBRID01` temporär hinzugefügt (neue IP `192.168.0.78`), ohne den bestehenden NAT-Adapter — und damit Domain-, DNS- und Cloud-Sync-Funktionalität — zu verändern.
+
+**Hindernis B — WinRM-Authentifizierung über Domain-Grenzen hinweg:** Die (bewusst nicht domänenverbundene) Appliance-VM konnte sich per WinRM zunächst nicht bei `SRV-HYBRID01` authentifizieren (`Error 2147942405`, *"server name cannot be resolved"*) — Kerberos, WinRMs Standard-Authentifizierung, funktioniert nur innerhalb derselben Domain. Lösung: `TrustedHosts` auf der Appliance-VM gesetzt, um den NTLM-Fallback für dieses eine Ziel zu erlauben:
+```powershell
+# Run on the appliance VM (client side) to allow NTLM authentication
+# to a specific domain-joined server across the workgroup/domain boundary
+winrm set winrm/config/client '@{TrustedHosts="192.168.0.78"}'
+```
+
+**Hindernis C — Türkische Tastatur + NetBIOS-Format:** Die erste Windows-Credential (`HYBRIDLINK\Administrator`) schlug mit *"Access is denied"* fehl — Ursache war ein auf einer türkischen Q-Tastatur fehlerhaft eingegebenes `\`-Zeichen. Lösung: UPN-Format statt NetBIOS-Format verwendet (`Administrator@hybridlink.local`), das kein `\` benötigt und damit robuster gegenüber Tastaturlayout-Eigenheiten ist.
+
+**Ergebnis — Discovery und Assessment erfolgreich abgeschlossen:**
+
+| Kennzahl | Wert |
+|---|---|
+| Readiness | ✅ Ready (1 von 1 Servern) |
+| Empfohlene VM-SKU | `Standard_D2as_v5` |
+| Empfohlene Sicherheitskonfiguration | Trusted launch |
+| Geschätzte monatliche Kosten | **$50.01** (Compute $25.53 · Storage $9.60 · Security $14.88) |
+| Migration Blockers | Keine |
+| Empfohlenes Migrationswerkzeug | Server migration |
+
+> 🔑 **Erkenntnis 11 — `DoNotEnforce` deaktiviert eine Policy nicht vollständig:** `DoNotEnforce` unterdrückt nur die Ablehnung von Deployments durch die Policy-Engine selbst — es beseitigt nicht zwangsläufig alle internen Azure-Workflows, die allein von der **Existenz** einer Policy-Zuweisung im Scope beeinflusst werden. Der einzige zuverlässige Weg, eine Policy als Root Cause endgültig auszuschließen, ist ein Test in einer Resource Group **ganz ohne** diese Zuweisung.
+
+> 🔑 **Erkenntnis 12 — Freie Subscriptions haben auch eingeschränkten Support-Zugang:** Azure for Students läuft im Basic-Support-Tarif, der technische Support-Tickets kategorisch ausschließt. In diesem Fall bedeutete das: keine offizielle Klärung durch Microsoft — der Root Cause musste komplett in Eigenregie durch systematische Ausschlussdiagnose gefunden werden. Dies ist ein relevanter Faktor bei der Wahl einer Subscription für produktionsnahe Lernprojekte.
+
+> 🔑 **Erkenntnis 13 — Eine isolierte, minimale Testumgebung ist das stärkste Diagnosewerkzeug:** Monatelange Diagnose in der ursprünglichen Resource Group konnte den Root Cause nicht eindeutig belegen. Ein einziger Test in einer komplett sauberen, neu erstellten Resource Group lieferte den Beweis in Sekunden. Wenn ein Fehler sich nicht erklären lässt, ist das Reduzieren auf die kleinstmögliche, unveränderte Umgebung oft schneller als das Testen einzelner Variablen in der bestehenden, komplexen Umgebung.
+
+> 🔑 **Erkenntnis 14 — VMware-NAT-Netze sind für externe Appliances grundsätzlich unerreichbar:** NAT-Netzwerke sind bewusst isoliert — ein Discovery-Tool auf einem anderen physischen Host kann eine VM im NAT-Netz eines anderen Hosts nicht erreichen, unabhängig von Firewall-Regeln. Ein zweiter, Bridged-Netzwerkadapter (statt einer riskanten Umkonfiguration des bestehenden NAT-Adapters) ist der sauberste Weg, ein solches Ziel temporär von außen erreichbar zu machen, ohne bestehende Dienste zu gefährden.
+
+> 🔑 **Erkenntnis 15 — WinRM/Kerberos setzt gemeinsame Domain-Mitgliedschaft voraus:** Eine nicht domänenverbundene (workgroup) Maschine kann sich nicht per Kerberos bei einem domänenverbundenen Server authentifizieren — ein sehr häufiges Szenario bei Discovery-/Monitoring-Tools, die bewusst außerhalb der Domain betrieben werden. `TrustedHosts` auf dem WinRM-Client ist die Standardlösung, um in diesem Fall gezielt NTLM zuzulassen.
+
+> 🔑 **Erkenntnis 16 — Lokalisierte Tastaturlayouts können Sonderzeichen in Zugangsdaten unbemerkt verfälschen:** Auf einer türkischen Q-Tastatur wird `\` über eine AltGr-Kombination erzeugt und lässt sich leicht falsch eingeben, ohne dass dies beim Tippen auffällt. Das UPN-Format (`user@domain.tld`) umgeht das `\`-Zeichen komplett und ist damit robuster als das NetBIOS-Format (`DOMAIN\user`) — besonders bei nicht-englischen Tastaturlayouts.
 
 | | |
 |--|--|
-| ![B2.5 – Azure CLI JSON-Ausgabe: hybridlink-migrate Projekt erfolgreich erstellt, provisioningState Succeeded, korrekte Tags](screenshots/B2-09-migrate-project-created.png) | ![B2.5 – Azure CLI JSON-Ausgabe: masterSites Ressource hlk-appliance erfolgreich erstellt, provisioningState Succeeded](screenshots/B2-10-mastersite-created.png) |
-| *Azure Migrate Projekt erfolgreich erstellt* | *masterSites-Ressource (Appliance-Grundlage) erfolgreich erstellt* |
-| ![B2.5 – Azure Support Request Formular: Basic-Support-Plan schließt technische Anfragen aus](screenshots/B2-12-support-basic-plan-limitation.png) | |
-| *Support-Ticket bestätigt: Basic-Support-Plan schließt technische Anfragen aus* |
+| ![B2.5 – Appliance-Key-Generierung in einer policy-freien Resource Group: grünes Häkchen "All resources have been created successfully"](screenshots/B2-13-clean-rg-key-generation-success.png) | ![B2.5 – Appliance Configuration Manager: Projekt-Key verifiziert, bei Azure eingeloggt, "The appliance has been successfully registered"](screenshots/B2-14-appliance-registered.png) |
+| *Root-Cause-Beweis: Key-Generierung in policy-freier Resource Group erfolgreich* | *Appliance erfolgreich registriert* |
+| ![B2.5 – Azure Portal migrate-lab Projekt Overview: Workloads 3, Action center Issues 0](screenshots/B2-15-discovery-successful.png) | ![B2.5 – Assessment Overview: Readiness 1 von 1 Ready, monatliche Kosten $50.01](screenshots/B2-16-assessment-overview.png) |
+| *Discovery erfolgreich abgeschlossen, keine offenen Issues* | *Assessment-Übersicht: Ready, $50.01/Monat* |
+| ![B2.5 – Assessment Detailtabelle: SRV-HYBRID01, Standard_D2as_v5, Trusted launch, keine Migration Blockers](screenshots/B2-17-assessment-vm-details.png) | |
+| *Detaillierte VM-SKU-Empfehlung und Kostenaufschlüsselung* |
 
 ---
 
@@ -378,11 +418,11 @@ In einer produktiven Umgebung mit einer regulären (kostenpflichtigen) Subscript
 - Scoping Filter gesetzt: nur die Organisationseinheit `OU=HybridLink-Users,DC=hybridlink,DC=local` wird synchronisiert
 - Konfiguration aktiviert und erste Synchronisation erfolgreich verifiziert
 
-> 🔑 **Erkenntnis 13 — Microsoft-Konten (MSA) werden von Cloud Sync als Gast behandelt, auch wenn sie als "Member" angezeigt werden:** Beim ersten Versuch, die Cloud-Sync-Konfigurationsseite mit dem persönlichen Konto zu öffnen, erschien die Fehlermeldung *"Guest users are not allowed to configure sync"* — obwohl das Konto im Tenant als **User type: Member** gelistet war. Der entscheidende Unterschied zeigte sich erst im Attribut **Identities**: Es handelte sich um ein **MSA-backed** Konto (`MicrosoftAccount`), das intern wie ein externer Gast behandelt wird. Dieses Verhalten ist in Microsofts eigenen Community-Foren als bekanntes Problem dokumentiert. **Lösung:** Ein neues, natives (passwortbasiertes, tenant-eigenes) Global-Administrator-Konto wurde angelegt — danach funktionierte der Zugriff auf Cloud Sync sofort fehlerfrei. Diese Unterscheidung zwischen "Member laut Anzeige" und "nativ vs. MSA-backed laut Identities-Attribut" ist ein Detail, das in vielen Tutorials fehlt, in der Praxis aber entscheidend sein kann.
+> 🔑 **Erkenntnis 17 — Microsoft-Konten (MSA) werden von Cloud Sync als Gast behandelt, auch wenn sie als "Member" angezeigt werden:** Beim ersten Versuch, die Cloud-Sync-Konfigurationsseite mit dem persönlichen Konto zu öffnen, erschien die Fehlermeldung *"Guest users are not allowed to configure sync"* — obwohl das Konto im Tenant als **User type: Member** gelistet war. Der entscheidende Unterschied zeigte sich erst im Attribut **Identities**: Es handelte sich um ein **MSA-backed** Konto (`MicrosoftAccount`), das intern wie ein externer Gast behandelt wird. Dieses Verhalten ist in Microsofts eigenen Community-Foren als bekanntes Problem dokumentiert. **Lösung:** Ein neues, natives (passwortbasiertes, tenant-eigenes) Global-Administrator-Konto wurde angelegt — danach funktionierte der Zugriff auf Cloud Sync sofort fehlerfrei. Diese Unterscheidung zwischen "Member laut Anzeige" und "nativ vs. MSA-backed laut Identities-Attribut" ist ein Detail, das in vielen Tutorials fehlt, in der Praxis aber entscheidend sein kann.
 
-> 🔑 **Erkenntnis 14 — Provisioning Agent nutzt automatisch ein gMSA (group Managed Service Account):** Bei der Agent-Konfiguration wurde automatisch ein gMSA (`hybridlink.local\provAgentgMSA`) für den Sync-Dienst erstellt — ein Best-Practice-Ansatz, da gMSA-Passwörter automatisch von Active Directory rotiert werden und keine manuelle Passwortverwaltung erfordern. Voraussetzung dafür ist ein bereits vorhandener KDS Root Key im Forest; falls dieser fehlt, kann er mit `Add-KdsRootKey -EffectiveTime (Get-Date).AddHours(-10)` (PowerShell auf dem DC) sofort nutzbar erstellt werden.
+> 🔑 **Erkenntnis 18 — Provisioning Agent nutzt automatisch ein gMSA (group Managed Service Account):** Bei der Agent-Konfiguration wurde automatisch ein gMSA (`hybridlink.local\provAgentgMSA`) für den Sync-Dienst erstellt — ein Best-Practice-Ansatz, da gMSA-Passwörter automatisch von Active Directory rotiert werden und keine manuelle Passwortverwaltung erfordern. Voraussetzung dafür ist ein bereits vorhandener KDS Root Key im Forest; falls dieser fehlt, kann er mit `Add-KdsRootKey -EffectiveTime (Get-Date).AddHours(-10)` (PowerShell auf dem DC) sofort nutzbar erstellt werden.
 
-> 🔑 **Erkenntnis 15 — Scoping Filter als Least-Privilege-Prinzip:** Ohne Scoping Filter synchronisiert Cloud Sync standardmäßig **alle** Objekte aller konfigurierten Domänen — inklusive potenziell sensibler Objekte wie eingebauter Konten. Durch die gezielte Begrenzung auf `OU=HybridLink-Users` wird nur die tatsächlich benötigte Untermenge an Benutzern synchronisiert, was Prinzipien der minimalen Rechtevergabe und Datensparsamkeit in der Praxis umsetzt.
+> 🔑 **Erkenntnis 19 — Scoping Filter als Least-Privilege-Prinzip:** Ohne Scoping Filter synchronisiert Cloud Sync standardmäßig **alle** Objekte aller konfigurierten Domänen — inklusive potenziell sensibler Objekte wie eingebauter Konten. Durch die gezielte Begrenzung auf `OU=HybridLink-Users` wird nur die tatsächlich benötigte Untermenge an Benutzern synchronisiert, was Prinzipien der minimalen Rechtevergabe und Datensparsamkeit in der Praxis umsetzt.
 
 | | |
 |--|--|
@@ -411,7 +451,11 @@ In einer produktiven Umgebung mit einer regulären (kostenpflichtigen) Subscript
 | 10 | 🔍 **Systematische Ausschlussdiagnose statt Rätselraten** | Policy, Identität und RBAC einzeln getestet, um die Fehlerursache einzugrenzen |
 | 11 | 🚧 **Manche Fehler bleiben ungeklärt** | Studenten-Subscriptions und Preview-APIs haben reale, teils undokumentierte Grenzen |
 | 12 | 🎫 **Freier Support-Tarif schließt technische Tickets aus** | Azure for Students (Basic Support) bietet keinen offiziellen Eskalationsweg für Plattformfehler |
-| 13 | 👤 **"Member" laut Anzeige ≠ native Identität** | MSA-backed Konten können von bestimmten Portal-Features als Gast behandelt werden — natives Konto als Lösung |
+| 13 | 🧪 **Isolierte Testumgebung schlägt monatelange Diagnose** | Ein Test in einer komplett sauberen Resource Group bestätigte den Root Cause in Sekunden |
+| 14 | 🔌 **VMware-NAT-Netze sind von außen unerreichbar** | Ein zweiter Bridged-Adapter macht eine Ziel-VM erreichbar, ohne bestehende Dienste zu riskieren |
+| 15 | 🔐 **WinRM/Kerberos braucht gemeinsame Domain-Mitgliedschaft** | `TrustedHosts` erlaubt gezielt NTLM für workgroup↔domain-Szenarien |
+| 16 | ⌨️ **Tastaturlayout kann Zugangsdaten unbemerkt verfälschen** | UPN-Format (`user@domain`) ist robuster als NetBIOS-Format (`DOMAIN\user`) auf nicht-englischen Layouts |
+| 17 | 👤 **"Member" laut Anzeige ≠ native Identität** | MSA-backed Konten können von bestimmten Portal-Features als Gast behandelt werden — natives Konto als Lösung |
 
 ---
 
@@ -455,10 +499,12 @@ hybridlink-arc-project/
     ├── B2-06-mars-agent-registered.png
     ├── B2-07-backup-schedule-configured.png
     ├── B2-08-first-backup-completed.png
-    ├── B2-09-migrate-project-created.png
-    ├── B2-10-mastersite-created.png
     ├── B2-11-restore-test-completed.png
-    ├── B2-12-support-basic-plan-limitation.png
+    ├── B2-13-clean-rg-key-generation-success.png
+    ├── B2-14-appliance-registered.png
+    ├── B2-15-discovery-successful.png
+    ├── B2-16-assessment-overview.png
+    ├── B2-17-assessment-vm-details.png
     ├── B3-01-emreadmin-native-identity.png
     ├── B3-02-cloud-sync-access-resolved.png
     ├── B3-03-provisioning-agent-installed.png
@@ -498,7 +544,7 @@ This project is based on an official lab setup guide (basis server preparation) 
 | 🔵 | [Bonus 2.2 — Azure Arc Onboarding](#bonus-22--azure-arc-onboarding-1) | Server registration with Azure | Own extension | ✅ |
 | 🔵 | [Bonus 2.3 — Policy, Monitor & Defender](#bonus-23--policy-monitor--defender-1) | Governance & security | Own extension | ✅ |
 | 🔵 | [Bonus 2.4 — Azure Backup (MARS Agent)](#bonus-24--azure-backup-mars-agent-1) | On-prem backup to the cloud | Own extension | ✅ |
-| 🔵 | [Bonus 2.5 — Azure Migrate](#bonus-25--azure-migrate-1) | Migration assessment | Own extension | ⚠️ |
+| 🔵 | [Bonus 2.5 — Azure Migrate](#bonus-25--azure-migrate-1) | Migration assessment | Own extension | ✅ |
 | 🔵 | [Bonus 3 — Microsoft Entra Cloud Sync](#bonus-3--microsoft-entra-cloud-sync-1) | AD user synchronization to Entra ID | Own extension | ✅ |
 
 > ℹ️ **Note on structure:** *Part 1* and *Bonus 1* come directly from the official lab setup guide. *Bonus 2* (Azure hybrid integration) is **not** part of the original document — it's an independent extension to demonstrate the full hybrid cloud lifecycle.
@@ -515,7 +561,7 @@ This project is based on an official lab setup guide (basis server preparation) 
 | Resource Group | `rg-hybridlink-arc` | Sweden Central |
 | Azure Arc | `SRV-HYBRID01` | Connected Machine Agent, public endpoint |
 | Recovery Services Vault | `rsv-hybridlink-backup` | Sweden Central · LRS |
-| Azure Migrate Project | `hybridlink-migrate` | Geography: Sweden |
+| Azure Migrate Project | `hybridlink-migrate` (blocked) / `migrate-lab` (successful) | Geography: Sweden · Recommended SKU: `Standard_D2as_v5` · $50.01/month |
 | Active Directory | `hybridlink.local` | Forest/domain, NetBIOS `HYBRIDLINK` |
 | Member Server | `SRV-SYNC01` | Domain member (not a DC), Provisioning Agent host |
 | Microsoft Entra Cloud Sync | `hybridlink.local` configuration | Scope: OU `HybridLink-Users`, Password Hash Sync enabled |
@@ -719,9 +765,11 @@ A backup is only as good as its proven recoverability. A full restore test was t
 - Created Migrate project `hybridlink-migrate` via Azure CLI (geography: Sweden)
 - Moved the on-prem VM via USB transfer to a second host (mini PC, Linux, VMware Workstation Pro, 32 GB RAM) to meet the appliance's resource requirements (16 GB RAM, 8 vCPU)
 - Successfully created the `Microsoft.OffAzure/masterSites` resource (`hlk-appliance`) via Azure CLI
-- **Path 1 — Appliance:** key generation in the Azure Portal **remained permanently blocked** (infinite loop, no error)
+- **Path 1 — Appliance:** key generation in the Azure Portal in `rg-hybridlink-arc` **remained permanently blocked** (infinite loop, no error)
 - **Path 2 — CSV import (appliance-free):** created `Microsoft.OffAzure/importSites` and both `Microsoft.Migrate/migrateProjects/Solutions` resources (Discovery + Assessment) via CLI afterward, to satisfy the Portal's prerequisites — **import still got stuck on "Preparing your project for importing machines"**
 - Opened an official Azure support ticket to clarify the root cause (see below)
+- **Breakthrough:** retested appliance key generation in a completely policy-free, newly created resource group — **succeeded immediately**, confirming the root cause
+- Fully deployed the appliance on a dedicated VM, ran a successful discovery, and generated a real assessment with a concrete VM SKU recommendation
 
 ```bash
 # Migrate project (same pattern as Bonus 2.1: stable API version + --is-full-object)
@@ -799,32 +847,70 @@ Both discovery paths (appliance-based and CSV import) got stuck in an infinite l
 | 2 | Missing permission to create a Microsoft Entra ID App Registration | Created a test app via `az ad app create` | ✅ Succeeded — no restriction |
 | 3 | Missing RBAC role-assignment permission | Created a service principal, assigned it the Contributor role | ✅ Succeeded — no restriction |
 | 4 | Missing backend resources (masterSites, importSites, Solutions) | Recreated all four resources individually via CLI | ✅ All succeeded — the blocker persisted regardless |
+| 5 | MSA-backed/"guest" identity blocks access (parallel to the Cloud Sync finding in Bonus 3) | Retried appliance key generation with the native `emreadmin` account instead of `okayemre@hotmail.com` | ❌ Identical failure — hypothesis ruled out |
+| 6 | The mere **presence** of the deny-tag policy in `rg-hybridlink-arc` affects the Portal's internal workflow, independent of the CLI workaround | Retried appliance key generation in a brand-new, policy-free resource group (`rg-migrate-test-clean`) | ✅ **Key generated immediately — root cause confirmed** |
 
 All test resources were cleaned up afterward, and the policy was reset to `Default`.
 
-**Attempted clarification via official Azure support:** A support ticket was opened to clarify the root cause directly with Microsoft. This surfaced a decisive, officially documented fact: *"With your Basic support plan, you can create support requests for billing, subscription management, and quota increase. For technical support, upgrade to a paid support plan."* — **Azure for Students subscriptions run on the Basic support tier by default, which categorically excludes technical support requests like this one.**
+**Attempted clarification via official Azure support:** A support ticket was opened to clarify the root cause directly with Microsoft. This surfaced a decisive, officially documented fact: *"With your Basic support plan, you can create support requests for billing, subscription management, and quota increase. For technical support, upgrade to a paid support plan."* — **Azure for Students subscriptions run on the Basic support tier by default, which categorically excludes technical support requests like this one.** With an official answer off the table, the elimination process continued independently (hypotheses 5 and 6).
 
-**Outcome:** The precise technical root cause **could not be conclusively resolved** despite fully eliminating every identifiable hypothesis (policy, identity, RBAC, backend resources) — and according to Microsoft's own support system, an official clarification isn't available on a free student subscription. This structurally confirms that the limitation sits at the subscription-tier level, not in our own configuration. The discovery/assessment phase was therefore **not** completed; a manual sizing estimate was done instead:
+**Root cause confirmed:** The decisive test was hypothesis 6 — appliance key generation in a resource group with **no** "Require a tag" policy at all. The result was immediate and unambiguous: a green checkmark, *"All resources have been created successfully."* The explanation is technically consistent with everything observed before: the Portal wizard creates its backend resources **automatically, without tags** — exactly what the deny policy blocks. Our own `az resource create --is-full-object` calls only succeeded because we supplied the tags ourselves. `DoNotEnforce` alone isn't enough to neutralize this behavior — only the complete absence of the policy assignment is. The MSA-identity hypothesis (5) is now also definitively ruled out.
 
-| On-prem resource | Recommended Azure VM SKU | Rationale |
+Until this breakthrough, a manual sizing estimate served as an interim solution:
+
+| On-prem resource | Manually estimated Azure VM SKU | Rationale |
 |---|---|---|
 | 2 vCPU, 4 GB RAM | `Standard_B2s` / `Standard_B2ats_v2` | Burstable, cost-effective for lab/test workloads |
 | 60 GB disk | Standard SSD (E15, 64 GB) | Sufficient performance for test workloads |
 
-In a production environment with a regular (paid) subscription with technical support access, this step would likely run fully automated.
+### ✅ Breakthrough — appliance deployment, discovery, and a real assessment
 
-> 🔑 **Key insight 10 — CLI extension preview status required an ARM fallback:** The `az migrate` command wasn't reliably available. Direct access via `az resource create` with `--is-full-object` and a stable (non-preview) API version proved to be a robust, repeatable workaround — applied across four different `Microsoft.OffAzure`/`Microsoft.Migrate` resource types.
+With the root cause confirmed, the full discovery/assessment chain was run end-to-end in the clean resource group (`rg-migrate-test-clean`, project `migrate-lab`) — including a complete, production-style appliance deployment (not just key generation).
 
-> 🔑 **Key insight 11 — Not every failure can be fully explained:** Despite methodically eliminating every identifiable cause, the blocker remained. In practice, cleanly documenting the diagnostic process and making an informed decision on how to proceed matters more than pursuing a task indefinitely.
+**Appliance VM:** A new, dedicated VM `MIG-APPLIANCE01` was created on the mini PC (Windows Server 2025 Standard Evaluation, 8 vCPU, 16 GB RAM, 80 GB disk, bridged network) — matching the official appliance minimum requirements. The appliance was set up via the official PowerShell installer script (`AzureMigrateInstaller.ps1`, scenario "Physical or other", cloud "Azure Public") and successfully registered with the project.
 
-> 🔑 **Key insight 12 — Free subscriptions also come with restricted support access:** Azure for Students runs on the Basic support tier, which categorically excludes technical support tickets. That means unresolved platform-level errors on student subscriptions have **no official escalation path** — only paid support plans or the (non-binding) Azure Community offer a way forward. This is a relevant factor when choosing a subscription for production-adjacent learning projects.
+**Obstacle A — network segmentation:** `SRV-HYBRID01` had so far only run on the Windows PC host's VMware NAT network (`192.168.35.0/24`) — **unreachable** from the appliance on the mini PC (bridged network), since NAT networks are isolated by design. Fix: a second, bridged network adapter was temporarily added to `SRV-HYBRID01` (new IP `192.168.0.78`), without changing the existing NAT adapter — and therefore without disrupting domain, DNS, or Cloud Sync functionality.
+
+**Obstacle B — WinRM authentication across a domain boundary:** The (deliberately non-domain-joined) appliance VM initially couldn't authenticate to `SRV-HYBRID01` over WinRM (`Error 2147942405`, *"server name cannot be resolved"*) — Kerberos, WinRM's default authentication, only works within the same domain. Fix: set `TrustedHosts` on the appliance VM to allow the NTLM fallback for this specific target:
+```powershell
+# Run on the appliance VM (client side) to allow NTLM authentication
+# to a specific domain-joined server across the workgroup/domain boundary
+winrm set winrm/config/client '@{TrustedHosts="192.168.0.78"}'
+```
+
+**Obstacle C — Turkish keyboard layout + NetBIOS format:** The first Windows credential (`HYBRIDLINK\Administrator`) failed with *"Access is denied"* — the cause was a mistyped `\` character on a Turkish Q keyboard layout. Fix: used UPN format instead of NetBIOS format (`Administrator@hybridlink.local`), which doesn't require a `\` and is therefore more robust against keyboard-layout quirks.
+
+**Result — discovery and assessment completed successfully:**
+
+| Metric | Value |
+|---|---|
+| Readiness | ✅ Ready (1 of 1 servers) |
+| Recommended VM SKU | `Standard_D2as_v5` |
+| Recommended security configuration | Trusted launch |
+| Estimated monthly cost | **$50.01** (Compute $25.53 · Storage $9.60 · Security $14.88) |
+| Migration blockers | None |
+| Recommended migration tool | Server migration |
+
+> 🔑 **Key insight 11 — `DoNotEnforce` doesn't fully disable a policy:** `DoNotEnforce` only suppresses the policy engine's deployment denial — it doesn't necessarily eliminate every internal Azure workflow that's influenced purely by the **presence** of a policy assignment in scope. The only reliable way to rule out a policy as the root cause is a test in a resource group with **no** such assignment at all.
+
+> 🔑 **Key insight 12 — Free subscriptions also come with restricted support access:** Azure for Students runs on the Basic support tier, which categorically excludes technical support tickets. In this case that meant no official clarification from Microsoft — the root cause had to be found entirely through independent, systematic elimination. This is a relevant factor when choosing a subscription for production-adjacent learning projects.
+
+> 🔑 **Key insight 13 — An isolated, minimal test environment is the strongest diagnostic tool:** Months of diagnosis in the original resource group couldn't conclusively pin down the root cause. A single test in a brand-new, completely clean resource group delivered proof in seconds. When a failure resists explanation, reducing to the smallest possible unmodified environment is often faster than testing individual variables inside the existing, complex one.
+
+> 🔑 **Key insight 14 — VMware NAT networks are fundamentally unreachable from external appliances:** NAT networks are isolated by design — a discovery tool on a different physical host can't reach a VM on another host's NAT network, regardless of firewall rules. A second, bridged network adapter (rather than a risky reconfiguration of the existing NAT adapter) is the cleanest way to temporarily expose such a target externally without endangering existing services.
+
+> 🔑 **Key insight 15 — WinRM/Kerberos requires shared domain membership:** A non-domain-joined (workgroup) machine can't authenticate to a domain-joined server via Kerberos — a very common scenario for discovery/monitoring tools deliberately run outside the domain. `TrustedHosts` on the WinRM client is the standard way to explicitly allow NTLM in this case.
+
+> 🔑 **Key insight 16 — Localized keyboard layouts can silently corrupt special characters in credentials:** On a Turkish Q keyboard, `\` is produced via an AltGr combination and is easy to mistype without noticing while typing. UPN format (`user@domain.tld`) avoids the `\` character entirely, making it more robust than NetBIOS format (`DOMAIN\user`) — especially on non-English keyboard layouts.
 
 | | |
 |--|--|
-| ![B2.5 – Azure CLI JSON output: hybridlink-migrate project successfully created, provisioningState Succeeded, correct tags](screenshots/B2-09-migrate-project-created.png) | ![B2.5 – Azure CLI JSON output: masterSites resource hlk-appliance successfully created, provisioningState Succeeded](screenshots/B2-10-mastersite-created.png) |
-| *Azure Migrate project successfully created* | *masterSites resource (appliance foundation) successfully created* |
-| ![B2.5 – Azure support request form: Basic support plan excludes technical requests](screenshots/B2-12-support-basic-plan-limitation.png) | |
-| *Support ticket confirms: Basic support plan excludes technical requests* |
+| ![B2.5 – Appliance key generation in a policy-free resource group: green checkmark "All resources have been created successfully"](screenshots/B2-13-clean-rg-key-generation-success.png) | ![B2.5 – Appliance Configuration Manager: project key verified, logged in to Azure, "The appliance has been successfully registered"](screenshots/B2-14-appliance-registered.png) |
+| *Root-cause proof: key generation succeeded in a policy-free resource group* | *Appliance successfully registered* |
+| ![B2.5 – Azure Portal migrate-lab project overview: Workloads 3, Action center Issues 0](screenshots/B2-15-discovery-successful.png) | ![B2.5 – Assessment overview: Readiness 1 of 1 Ready, monthly cost $50.01](screenshots/B2-16-assessment-overview.png) |
+| *Discovery completed successfully, no open issues* | *Assessment overview: Ready, $50.01/month* |
+| ![B2.5 – Assessment detail table: SRV-HYBRID01, Standard_D2as_v5, Trusted launch, no migration blockers](screenshots/B2-17-assessment-vm-details.png) | |
+| *Detailed VM SKU recommendation and cost breakdown* |
 
 ---
 
@@ -840,11 +926,11 @@ In a production environment with a regular (paid) subscription with technical su
 - A scoping filter was set: only the `OU=HybridLink-Users,DC=hybridlink,DC=local` organizational unit is synchronized
 - The configuration was enabled and the first synchronization was successfully verified
 
-> 🔑 **Key insight 13 — Microsoft Accounts (MSA) are treated as guests by Cloud Sync, even when listed as "Member":** Opening the Cloud Sync configuration page with the personal account initially returned *"Guest users are not allowed to configure sync"* — even though the account was listed in the tenant as **User type: Member**. The decisive difference only showed up in the **Identities** attribute: the account was **MSA-backed** (`MicrosoftAccount`), which is internally treated like an external guest. This behavior is a documented, known issue on Microsoft's own community forums. **Solution:** A new, native (password-based, tenant-owned) Global Administrator account was created — access to Cloud Sync then worked immediately without errors. The distinction between "Member per the UI label" and "native vs. MSA-backed per the Identities attribute" is a detail many tutorials skip, but it can be decisive in practice.
+> 🔑 **Key insight 17 — Microsoft Accounts (MSA) are treated as guests by Cloud Sync, even when listed as "Member":** Opening the Cloud Sync configuration page with the personal account initially returned *"Guest users are not allowed to configure sync"* — even though the account was listed in the tenant as **User type: Member**. The decisive difference only showed up in the **Identities** attribute: the account was **MSA-backed** (`MicrosoftAccount`), which is internally treated like an external guest. This behavior is a documented, known issue on Microsoft's own community forums. **Solution:** A new, native (password-based, tenant-owned) Global Administrator account was created — access to Cloud Sync then worked immediately without errors. The distinction between "Member per the UI label" and "native vs. MSA-backed per the Identities attribute" is a detail many tutorials skip, but it can be decisive in practice.
 
-> 🔑 **Key insight 14 — The Provisioning Agent automatically uses a gMSA (group Managed Service Account):** During agent configuration, a gMSA (`hybridlink.local\provAgentgMSA`) was automatically created for the sync service — a best-practice approach, since gMSA passwords are rotated automatically by Active Directory and require no manual password management. This requires a KDS Root Key to already exist in the forest; if missing, one can be created and made immediately usable with `Add-KdsRootKey -EffectiveTime (Get-Date).AddHours(-10)` (PowerShell on the DC).
+> 🔑 **Key insight 18 — The Provisioning Agent automatically uses a gMSA (group Managed Service Account):** During agent configuration, a gMSA (`hybridlink.local\provAgentgMSA`) was automatically created for the sync service — a best-practice approach, since gMSA passwords are rotated automatically by Active Directory and require no manual password management. This requires a KDS Root Key to already exist in the forest; if missing, one can be created and made immediately usable with `Add-KdsRootKey -EffectiveTime (Get-Date).AddHours(-10)` (PowerShell on the DC).
 
-> 🔑 **Key insight 15 — Scoping filters as a least-privilege control:** Without a scoping filter, Cloud Sync synchronizes **all** objects from all configured domains by default — including potentially sensitive objects like built-in accounts. By scoping to `OU=HybridLink-Users` only, exclusively the actually-needed subset of users is synchronized, putting least-privilege and data-minimization principles into practice.
+> 🔑 **Key insight 19 — Scoping filters as a least-privilege control:** Without a scoping filter, Cloud Sync synchronizes **all** objects from all configured domains by default — including potentially sensitive objects like built-in accounts. By scoping to `OU=HybridLink-Users` only, exclusively the actually-needed subset of users is synchronized, putting least-privilege and data-minimization principles into practice.
 
 | | |
 |--|--|
@@ -873,7 +959,11 @@ In a production environment with a regular (paid) subscription with technical su
 | 10 | 🔍 **Systematic elimination beats guessing** | Tested policy, identity, and RBAC individually to narrow down the root cause |
 | 11 | 🚧 **Some failures stay unresolved** | Student subscriptions and preview APIs have real, sometimes undocumented limits |
 | 12 | 🎫 **Free support tier excludes technical tickets** | Azure for Students (Basic support) offers no official escalation path for platform errors |
-| 13 | 👤 **"Member" per the UI ≠ a native identity** | MSA-backed accounts can be treated as guests by certain Portal features — a native account is the fix |
+| 13 | 🧪 **An isolated test environment beats months of diagnosis** | A test in a completely clean resource group confirmed the root cause in seconds |
+| 14 | 🔌 **VMware NAT networks are unreachable from outside** | A second bridged adapter makes a target VM reachable without risking existing services |
+| 15 | 🔐 **WinRM/Kerberos needs shared domain membership** | `TrustedHosts` explicitly allows NTLM for workgroup↔domain scenarios |
+| 16 | ⌨️ **Keyboard layout can silently corrupt credentials** | UPN format (`user@domain`) is more robust than NetBIOS format (`DOMAIN\user`) on non-English layouts |
+| 17 | 👤 **"Member" per the UI ≠ a native identity** | MSA-backed accounts can be treated as guests by certain Portal features — a native account is the fix |
 
 ---
 
@@ -917,10 +1007,12 @@ hybridlink-arc-project/
     ├── B2-06-mars-agent-registered.png
     ├── B2-07-backup-schedule-configured.png
     ├── B2-08-first-backup-completed.png
-    ├── B2-09-migrate-project-created.png
-    ├── B2-10-mastersite-created.png
     ├── B2-11-restore-test-completed.png
-    ├── B2-12-support-basic-plan-limitation.png
+    ├── B2-13-clean-rg-key-generation-success.png
+    ├── B2-14-appliance-registered.png
+    ├── B2-15-discovery-successful.png
+    ├── B2-16-assessment-overview.png
+    ├── B2-17-assessment-vm-details.png
     ├── B3-01-emreadmin-native-identity.png
     ├── B3-02-cloud-sync-access-resolved.png
     ├── B3-03-provisioning-agent-installed.png
