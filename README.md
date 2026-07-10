@@ -37,6 +37,7 @@ Dieses Projekt basiert auf einer offiziellen Lab-Setup-Anleitung (Basis-Server-V
 | 🔵 | [Bonus 2.3 — Policy, Monitor & Defender](#bonus-23--policy-monitor--defender) | Governance & Sicherheit | Eigene Erweiterung | ✅ |
 | 🔵 | [Bonus 2.4 — Azure Backup (MARS Agent)](#bonus-24--azure-backup-mars-agent) | On-Prem-Backup in die Cloud | Eigene Erweiterung | ✅ |
 | 🔵 | [Bonus 2.5 — Azure Migrate](#bonus-25--azure-migrate) | Migrationsbewertung | Eigene Erweiterung | ⚠️ |
+| 🔵 | [Bonus 3 — Microsoft Entra Cloud Sync](#bonus-3--microsoft-entra-cloud-sync) | AD-Benutzer-Synchronisation zu Entra ID | Eigene Erweiterung | ✅ |
 
 > ℹ️ **Hinweis zur Struktur:** *Teil 1* und *Bonus 1* stammen direkt aus der offiziellen Lab-Setup-Anleitung. *Bonus 2* (Azure-Hybrid-Integration) ist **nicht** Teil des Original-Dokuments, sondern eine eigenständige Erweiterung, um den vollen Hybrid-Cloud-Lebenszyklus abzubilden.
 
@@ -54,6 +55,8 @@ Dieses Projekt basiert auf einer offiziellen Lab-Setup-Anleitung (Basis-Server-V
 | Recovery Services Vault | `rsv-hybridlink-backup` | Sweden Central · LRS |
 | Azure Migrate Projekt | `hybridlink-migrate` | Geography: Sweden |
 | Active Directory | `hybridlink.local` | Forest/Domain, NetBIOS `HYBRIDLINK` |
+| Member Server | `SRV-SYNC01` | Domain-Mitglied (kein DC), Provisioning Agent Host |
+| Microsoft Entra Cloud Sync | `hybridlink.local` Konfiguration | Scope: OU `HybridLink-Users`, Password Hash Sync aktiviert |
 
 ---
 
@@ -363,6 +366,35 @@ In einer produktiven Umgebung mit einer regulären (kostenpflichtigen) Subscript
 
 ---
 
+## Bonus 3 — Microsoft Entra Cloud Sync
+
+> 💡 Der ursprüngliche Bonus-Teil des Lab-Dokuments (Domain-Controller-Setup) diente als Vorbereitung für Microsoft Entra Connect Cloud Sync. In diesem Abschnitt wird diese Vorbereitung tatsächlich umgesetzt: Benutzer aus dem on-premises Active Directory (`hybridlink.local`) werden automatisch nach Microsoft Entra ID synchronisiert — die Grundlage für Hybrid-Identitäten in produktiven Umgebungen.
+
+### Durchgeführte Schritte
+
+- Separater Member-Server `SRV-SYNC01` (kein Domain Controller) im selben VMware-Host wie `SRV-HYBRID01` erstellt und der Domäne `hybridlink.local` beigetreten
+- Microsoft Entra Provisioning Agent auf `SRV-SYNC01` installiert
+- Neue Cloud-Sync-Konfiguration "AD to Microsoft Entra ID sync" erstellt, inklusive Password Hash Sync
+- Scoping Filter gesetzt: nur die Organisationseinheit `OU=HybridLink-Users,DC=hybridlink,DC=local` wird synchronisiert
+- Konfiguration aktiviert und erste Synchronisation erfolgreich verifiziert
+
+> 🔑 **Erkenntnis 13 — Microsoft-Konten (MSA) werden von Cloud Sync als Gast behandelt, auch wenn sie als "Member" angezeigt werden:** Beim ersten Versuch, die Cloud-Sync-Konfigurationsseite mit dem persönlichen Konto zu öffnen, erschien die Fehlermeldung *"Guest users are not allowed to configure sync"* — obwohl das Konto im Tenant als **User type: Member** gelistet war. Der entscheidende Unterschied zeigte sich erst im Attribut **Identities**: Es handelte sich um ein **MSA-backed** Konto (`MicrosoftAccount`), das intern wie ein externer Gast behandelt wird. Dieses Verhalten ist in Microsofts eigenen Community-Foren als bekanntes Problem dokumentiert. **Lösung:** Ein neues, natives (passwortbasiertes, tenant-eigenes) Global-Administrator-Konto wurde angelegt — danach funktionierte der Zugriff auf Cloud Sync sofort fehlerfrei. Diese Unterscheidung zwischen "Member laut Anzeige" und "nativ vs. MSA-backed laut Identities-Attribut" ist ein Detail, das in vielen Tutorials fehlt, in der Praxis aber entscheidend sein kann.
+
+> 🔑 **Erkenntnis 14 — Provisioning Agent nutzt automatisch ein gMSA (group Managed Service Account):** Bei der Agent-Konfiguration wurde automatisch ein gMSA (`hybridlink.local\provAgentgMSA`) für den Sync-Dienst erstellt — ein Best-Practice-Ansatz, da gMSA-Passwörter automatisch von Active Directory rotiert werden und keine manuelle Passwortverwaltung erfordern. Voraussetzung dafür ist ein bereits vorhandener KDS Root Key im Forest; falls dieser fehlt, kann er mit `Add-KdsRootKey -EffectiveTime (Get-Date).AddHours(-10)` (PowerShell auf dem DC) sofort nutzbar erstellt werden.
+
+> 🔑 **Erkenntnis 15 — Scoping Filter als Least-Privilege-Prinzip:** Ohne Scoping Filter synchronisiert Cloud Sync standardmäßig **alle** Objekte aller konfigurierten Domänen — inklusive potenziell sensibler Objekte wie eingebauter Konten. Durch die gezielte Begrenzung auf `OU=HybridLink-Users` wird nur die tatsächlich benötigte Untermenge an Benutzern synchronisiert, was Prinzipien der minimalen Rechtevergabe und Datensparsamkeit in der Praxis umsetzt.
+
+| | |
+|--|--|
+| ![B3 – Konto-Übersicht von emreadmin@okayemrehotmail.onmicrosoft.com: User type Member, Identities zeigt natives Tenant-Konto statt MicrosoftAccount](screenshots/B3-01-emreadmin-native-identity.png) | ![B3 – Cloud Sync \| Configurations Seite öffnet sich fehlerfrei mit dem nativen emreadmin-Konto, kein "Guest users" Fehler mehr](screenshots/B3-02-cloud-sync-access-resolved.png) |
+| *Natives Admin-Konto (Member, keine MSA-Identität) als Lösung des Guest-Fehlers* | *Cloud Sync Configurations-Seite erfolgreich erreichbar* |
+| ![B3 – Microsoft Entra Provisioning Agent Configuration Wizard, Confirm-Seite: Active Directory hybridlink.local mit gMSA provAgentgMSA, Microsoft Entra ID Login emreadmin](screenshots/B3-03-provisioning-agent-installed.png) | ![B3 – Scoping Filters Seite: "Selected organizational units" mit Distinguished Name OU=HybridLink-Users,DC=hybridlink,DC=local](screenshots/B3-04-scoping-filter-ou.png) |
+| *Provisioning Agent erfolgreich installiert und mit AD + Entra ID verbunden* | *Scoping Filter auf OU HybridLink-Users begrenzt* |
+| ![B3 – Provisioning Logs zeigen Create- und Update-Ereignisse für Anna TestUser1, alle mit Status Success, Quelle Active Directory, Ziel Microsoft Entra ID](screenshots/B3-05-provisioning-logs-success.png) | ![B3 – Microsoft Entra ID Benutzerliste: Anna TestUser1 mit Spalte "On-premises sync" = Yes](screenshots/B3-06-anna-user-synced.png) |
+| *Provisioning-Logs bestätigen erfolgreiche Synchronisation* | *Finale Verifikation: Testbenutzer erfolgreich in Entra ID synchronisiert* |
+
+---
+
 ## 🧠 Key Takeaways
 
 | # | Erkenntnis | Warum wichtig |
@@ -379,6 +411,7 @@ In einer produktiven Umgebung mit einer regulären (kostenpflichtigen) Subscript
 | 10 | 🔍 **Systematische Ausschlussdiagnose statt Rätselraten** | Policy, Identität und RBAC einzeln getestet, um die Fehlerursache einzugrenzen |
 | 11 | 🚧 **Manche Fehler bleiben ungeklärt** | Studenten-Subscriptions und Preview-APIs haben reale, teils undokumentierte Grenzen |
 | 12 | 🎫 **Freier Support-Tarif schließt technische Tickets aus** | Azure for Students (Basic Support) bietet keinen offiziellen Eskalationsweg für Plattformfehler |
+| 13 | 👤 **"Member" laut Anzeige ≠ native Identität** | MSA-backed Konten können von bestimmten Portal-Features als Gast behandelt werden — natives Konto als Lösung |
 
 ---
 
@@ -391,6 +424,7 @@ In einer produktiven Umgebung mit einer regulären (kostenpflichtigen) Subscript
 ![Defender for Cloud](https://img.shields.io/badge/Defender_for_Cloud-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
 ![Azure Backup](https://img.shields.io/badge/Azure_Backup-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
 ![Azure Migrate](https://img.shields.io/badge/Azure_Migrate-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
+![Microsoft Entra ID](https://img.shields.io/badge/Microsoft_Entra_ID-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
 ![Active Directory](https://img.shields.io/badge/Active_Directory-0078D4?style=flat-square&logo=windows&logoColor=white)
 ![Azure CLI](https://img.shields.io/badge/Azure_CLI-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
 ![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat-square&logo=github&logoColor=white)
@@ -424,7 +458,13 @@ hybridlink-arc-project/
     ├── B2-09-migrate-project-created.png
     ├── B2-10-mastersite-created.png
     ├── B2-11-restore-test-completed.png
-    └── B2-12-support-basic-plan-limitation.png
+    ├── B2-12-support-basic-plan-limitation.png
+    ├── B3-01-emreadmin-native-identity.png
+    ├── B3-02-cloud-sync-access-resolved.png
+    ├── B3-03-provisioning-agent-installed.png
+    ├── B3-04-scoping-filter-ou.png
+    ├── B3-05-provisioning-logs-success.png
+    └── B3-06-anna-user-synced.png
 ```
 
 ---
@@ -459,6 +499,7 @@ This project is based on an official lab setup guide (basis server preparation) 
 | 🔵 | [Bonus 2.3 — Policy, Monitor & Defender](#bonus-23--policy-monitor--defender-1) | Governance & security | Own extension | ✅ |
 | 🔵 | [Bonus 2.4 — Azure Backup (MARS Agent)](#bonus-24--azure-backup-mars-agent-1) | On-prem backup to the cloud | Own extension | ✅ |
 | 🔵 | [Bonus 2.5 — Azure Migrate](#bonus-25--azure-migrate-1) | Migration assessment | Own extension | ⚠️ |
+| 🔵 | [Bonus 3 — Microsoft Entra Cloud Sync](#bonus-3--microsoft-entra-cloud-sync-1) | AD user synchronization to Entra ID | Own extension | ✅ |
 
 > ℹ️ **Note on structure:** *Part 1* and *Bonus 1* come directly from the official lab setup guide. *Bonus 2* (Azure hybrid integration) is **not** part of the original document — it's an independent extension to demonstrate the full hybrid cloud lifecycle.
 
@@ -476,6 +517,8 @@ This project is based on an official lab setup guide (basis server preparation) 
 | Recovery Services Vault | `rsv-hybridlink-backup` | Sweden Central · LRS |
 | Azure Migrate Project | `hybridlink-migrate` | Geography: Sweden |
 | Active Directory | `hybridlink.local` | Forest/domain, NetBIOS `HYBRIDLINK` |
+| Member Server | `SRV-SYNC01` | Domain member (not a DC), Provisioning Agent host |
+| Microsoft Entra Cloud Sync | `hybridlink.local` configuration | Scope: OU `HybridLink-Users`, Password Hash Sync enabled |
 
 ---
 
@@ -785,6 +828,35 @@ In a production environment with a regular (paid) subscription with technical su
 
 ---
 
+## Bonus 3 — Microsoft Entra Cloud Sync
+
+> 💡 The original "Bonus" section of the lab document (Domain Controller setup) existed to prepare for Microsoft Entra Connect Cloud Sync. This section actually implements that preparation: users from the on-premises Active Directory (`hybridlink.local`) are automatically synchronized to Microsoft Entra ID — the foundation for hybrid identity in production environments.
+
+### Steps performed
+
+- A separate member server `SRV-SYNC01` (not a Domain Controller) was created on the same VMware host as `SRV-HYBRID01` and joined to the `hybridlink.local` domain
+- The Microsoft Entra Provisioning Agent was installed on `SRV-SYNC01`
+- A new "AD to Microsoft Entra ID sync" cloud sync configuration was created, including Password Hash Sync
+- A scoping filter was set: only the `OU=HybridLink-Users,DC=hybridlink,DC=local` organizational unit is synchronized
+- The configuration was enabled and the first synchronization was successfully verified
+
+> 🔑 **Key insight 13 — Microsoft Accounts (MSA) are treated as guests by Cloud Sync, even when listed as "Member":** Opening the Cloud Sync configuration page with the personal account initially returned *"Guest users are not allowed to configure sync"* — even though the account was listed in the tenant as **User type: Member**. The decisive difference only showed up in the **Identities** attribute: the account was **MSA-backed** (`MicrosoftAccount`), which is internally treated like an external guest. This behavior is a documented, known issue on Microsoft's own community forums. **Solution:** A new, native (password-based, tenant-owned) Global Administrator account was created — access to Cloud Sync then worked immediately without errors. The distinction between "Member per the UI label" and "native vs. MSA-backed per the Identities attribute" is a detail many tutorials skip, but it can be decisive in practice.
+
+> 🔑 **Key insight 14 — The Provisioning Agent automatically uses a gMSA (group Managed Service Account):** During agent configuration, a gMSA (`hybridlink.local\provAgentgMSA`) was automatically created for the sync service — a best-practice approach, since gMSA passwords are rotated automatically by Active Directory and require no manual password management. This requires a KDS Root Key to already exist in the forest; if missing, one can be created and made immediately usable with `Add-KdsRootKey -EffectiveTime (Get-Date).AddHours(-10)` (PowerShell on the DC).
+
+> 🔑 **Key insight 15 — Scoping filters as a least-privilege control:** Without a scoping filter, Cloud Sync synchronizes **all** objects from all configured domains by default — including potentially sensitive objects like built-in accounts. By scoping to `OU=HybridLink-Users` only, exclusively the actually-needed subset of users is synchronized, putting least-privilege and data-minimization principles into practice.
+
+| | |
+|--|--|
+| ![B3 – Account overview for emreadmin@okayemrehotmail.onmicrosoft.com: User type Member, Identities shows a native tenant account instead of MicrosoftAccount](screenshots/B3-01-emreadmin-native-identity.png) | ![B3 – Cloud Sync \| Configurations page opens without error using the native emreadmin account, no more "Guest users" error](screenshots/B3-02-cloud-sync-access-resolved.png) |
+| *Native admin account (Member, no MSA identity) resolves the guest error* | *Cloud Sync Configurations page successfully reachable* |
+| ![B3 – Microsoft Entra Provisioning Agent Configuration wizard, Confirm page: Active Directory hybridlink.local with gMSA provAgentgMSA, Microsoft Entra ID login emreadmin](screenshots/B3-03-provisioning-agent-installed.png) | ![B3 – Scoping Filters page: "Selected organizational units" with Distinguished Name OU=HybridLink-Users,DC=hybridlink,DC=local](screenshots/B3-04-scoping-filter-ou.png) |
+| *Provisioning Agent successfully installed and connected to AD + Entra ID* | *Scoping filter limited to the HybridLink-Users OU* |
+| ![B3 – Provisioning logs show Create and Update events for Anna TestUser1, all with Status Success, source Active Directory, target Microsoft Entra ID](screenshots/B3-05-provisioning-logs-success.png) | ![B3 – Microsoft Entra ID user list: Anna TestUser1 with "On-premises sync" column = Yes](screenshots/B3-06-anna-user-synced.png) |
+| *Provisioning logs confirm successful synchronization* | *Final verification: test user successfully synchronized to Entra ID* |
+
+---
+
 ## 🧠 Key Takeaways
 
 | # | Insight | Why it matters |
@@ -801,6 +873,7 @@ In a production environment with a regular (paid) subscription with technical su
 | 10 | 🔍 **Systematic elimination beats guessing** | Tested policy, identity, and RBAC individually to narrow down the root cause |
 | 11 | 🚧 **Some failures stay unresolved** | Student subscriptions and preview APIs have real, sometimes undocumented limits |
 | 12 | 🎫 **Free support tier excludes technical tickets** | Azure for Students (Basic support) offers no official escalation path for platform errors |
+| 13 | 👤 **"Member" per the UI ≠ a native identity** | MSA-backed accounts can be treated as guests by certain Portal features — a native account is the fix |
 
 ---
 
@@ -813,6 +886,7 @@ In a production environment with a regular (paid) subscription with technical su
 ![Defender for Cloud](https://img.shields.io/badge/Defender_for_Cloud-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
 ![Azure Backup](https://img.shields.io/badge/Azure_Backup-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
 ![Azure Migrate](https://img.shields.io/badge/Azure_Migrate-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
+![Microsoft Entra ID](https://img.shields.io/badge/Microsoft_Entra_ID-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
 ![Active Directory](https://img.shields.io/badge/Active_Directory-0078D4?style=flat-square&logo=windows&logoColor=white)
 ![Azure CLI](https://img.shields.io/badge/Azure_CLI-0078D4?style=flat-square&logo=microsoft-azure&logoColor=white)
 ![GitHub](https://img.shields.io/badge/GitHub-181717?style=flat-square&logo=github&logoColor=white)
@@ -846,7 +920,13 @@ hybridlink-arc-project/
     ├── B2-09-migrate-project-created.png
     ├── B2-10-mastersite-created.png
     ├── B2-11-restore-test-completed.png
-    └── B2-12-support-basic-plan-limitation.png
+    ├── B2-12-support-basic-plan-limitation.png
+    ├── B3-01-emreadmin-native-identity.png
+    ├── B3-02-cloud-sync-access-resolved.png
+    ├── B3-03-provisioning-agent-installed.png
+    ├── B3-04-scoping-filter-ou.png
+    ├── B3-05-provisioning-logs-success.png
+    └── B3-06-anna-user-synced.png
 ```
 
 ---
